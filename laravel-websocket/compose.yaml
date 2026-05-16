@@ -1,4 +1,4 @@
-name: laravel-broadcast-benchmark
+name: laravel-websocket-benchmark
 
 x-laravel-env: &laravel-env
   APP_KEY: base64:6hY9DU+7hbHF3xzXDxN+RnwQ77CYH2xEqTtnYy/tKwM=
@@ -36,9 +36,9 @@ services:
   pogo:
     build:
       context: ../..
-      dockerfile: benchmarks/laravel-broadcast/Dockerfile
+      dockerfile: benchmarks/laravel-websocket/Dockerfile
       args:
-        APP_PATH: benchmarks/laravel-broadcast/pogo
+        APP_PATH: benchmarks/laravel-websocket/pogo
     working_dir: /var/www/html
     command:
       [
@@ -81,9 +81,9 @@ services:
   reverb-app:
     build:
       context: ../..
-      dockerfile: benchmarks/laravel-broadcast/Dockerfile
+      dockerfile: benchmarks/laravel-websocket/Dockerfile
       args:
-        APP_PATH: benchmarks/laravel-broadcast/reverb
+        APP_PATH: benchmarks/laravel-websocket/reverb
     working_dir: /var/www/html
     command:
       ["php", "artisan", "octane:frankenphp", "--host=0.0.0.0", "--port=8000"]
@@ -109,9 +109,9 @@ services:
   reverb-ws:
     build:
       context: ../..
-      dockerfile: benchmarks/laravel-broadcast/Dockerfile
+      dockerfile: benchmarks/laravel-websocket/Dockerfile
       args:
-        APP_PATH: benchmarks/laravel-broadcast/reverb
+        APP_PATH: benchmarks/laravel-websocket/reverb
     working_dir: /var/www/html
     command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080"]
     environment:
@@ -253,7 +253,7 @@ services:
   go-receiver-pogo:
     build:
       context: ../..
-      dockerfile: benchmarks/laravel-broadcast/Dockerfile
+      dockerfile: benchmarks/laravel-websocket/Dockerfile
       target: builder
     working_dir: /websocket
     command: ["go", "run", "./cmd/bench-receiver"]
@@ -275,7 +275,7 @@ services:
   go-receiver-pogo-listener-1: &go-receiver-pogo-listener
     build:
       context: ../..
-      dockerfile: benchmarks/laravel-broadcast/Dockerfile
+      dockerfile: benchmarks/laravel-websocket/Dockerfile
       target: builder
     working_dir: /websocket
     command: ["go", "run", "./cmd/bench-receiver"]
@@ -355,7 +355,7 @@ services:
   go-receiver-pogo-publisher:
     build:
       context: ../..
-      dockerfile: benchmarks/laravel-broadcast/Dockerfile
+      dockerfile: benchmarks/laravel-websocket/Dockerfile
       target: builder
     working_dir: /websocket
     command: ["go", "run", "./cmd/bench-receiver"]

@@ -14,7 +14,7 @@ php artisan migrate --force
 frankenphp run --config Caddyfile
 ```
 
-From `benchmarks/laravel-broadcast`, run:
+From `benchmarks/laravel-websocket`, run:
 
 ```bash
 DRIVER=pogo HOST=localhost HTTP_PORT=80 WS_PORT=80 k6 run benchmark.js
