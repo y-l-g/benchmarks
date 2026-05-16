@@ -33,6 +33,7 @@
             outbound_queue_size {$POGO_WS_OUTBOUND_QUEUE_SIZE:256}
             write_burst_size {$POGO_WS_WRITE_BURST_SIZE:64}
             enable_compression {$POGO_WS_ENABLE_COMPRESSION:false}
+            handshake_rate -1
 
             webhook_url     http://localhost/webhook
             webhook_secret  super-secret-key
