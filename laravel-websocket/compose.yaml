@@ -1,0 +1,400 @@
+name: laravel-broadcast-benchmark
+
+x-laravel-env: &laravel-env
+  APP_KEY: base64:6hY9DU+7hbHF3xzXDxN+RnwQ77CYH2xEqTtnYy/tKwM=
+  CACHE_STORE: array
+  QUEUE_CONNECTION: sync
+  SESSION_DRIVER: array
+  LOG_CHANNEL: stderr
+  LOG_LEVEL: warning
+
+x-k6-env: &k6-env
+  VUS: ${VUS:-500}
+  MSG_COUNT: ${MSG_COUNT:-100}
+  PAYLOAD_SIZE: ${PAYLOAD_SIZE:-1024}
+  PUBLISH_BATCHES: ${PUBLISH_BATCHES:-20}
+  BATCH_INTERVAL_SECONDS: ${BATCH_INTERVAL_SECONDS:-2}
+  RAMP_UP_SECONDS: ${RAMP_UP_SECONDS:-10}
+  HOLD_SECONDS: ${HOLD_SECONDS:-}
+  RAMP_DOWN_SECONDS: ${RAMP_DOWN_SECONDS:-5}
+  PUBLISH_START_SECONDS: ${PUBLISH_START_SECONDS:-12}
+  PUBLISH_MAX_DURATION_SECONDS: ${PUBLISH_MAX_DURATION_SECONDS:-}
+  DRAIN_SECONDS: ${DRAIN_SECONDS:-10}
+
+x-go-receiver-env: &go-receiver-env
+  VUS: ${VUS:-500}
+  MSG_COUNT: ${MSG_COUNT:-100}
+  PAYLOAD_SIZE: ${PAYLOAD_SIZE:-1024}
+  PUBLISH_BATCHES: ${PUBLISH_BATCHES:-20}
+  BATCH_INTERVAL_SECONDS: ${BATCH_INTERVAL_SECONDS:-2}
+  RAMP_UP_SECONDS: ${RAMP_UP_SECONDS:-10}
+  PUBLISH_START_SECONDS: ${PUBLISH_START_SECONDS:-12}
+  PUBLISH_MAX_DURATION_SECONDS: ${PUBLISH_MAX_DURATION_SECONDS:-}
+  DRAIN_SECONDS: ${DRAIN_SECONDS:-10}
+
+services:
+  pogo:
+    build:
+      context: ../..
+      dockerfile: benchmarks/laravel-broadcast/Dockerfile
+      args:
+        APP_PATH: benchmarks/laravel-broadcast/pogo
+    working_dir: /var/www/html
+    command:
+      [
+        "php",
+        "artisan",
+        "octane:frankenphp",
+        "--host=0.0.0.0",
+        "--port=8000",
+        "--admin-host=0.0.0.0",
+        "--admin-port=2019",
+        "--caddyfile=Caddyfile",
+      ]
+    environment:
+      <<: *laravel-env
+      BROADCAST_CONNECTION: pogo
+      WS_APP_ID: pogo-app
+      WS_APP_SECRET: super-secret-key
+      CADDY_SERVER_ADMIN_HOST: 0.0.0.0
+      CADDY_SERVER_ADMIN_PORT: 2019
+      CADDY_SERVER_LOG_LEVEL: WARN
+      POGO_WS_HOT_PATH_METRICS: ${POGO_WS_HOT_PATH_METRICS:-false}
+      POGO_WS_OUTBOUND_QUEUE_SIZE: ${POGO_WS_OUTBOUND_QUEUE_SIZE:-256}
+      POGO_WS_WRITE_BURST_SIZE: ${POGO_WS_WRITE_BURST_SIZE:-64}
+      POGO_WS_FANOUT_BACKPRESSURE_THRESHOLD: ${POGO_WS_FANOUT_BACKPRESSURE_THRESHOLD:-16}
+      POGO_WS_FANOUT_BACKPRESSURE_MAX_WAIT: ${POGO_WS_FANOUT_BACKPRESSURE_MAX_WAIT:-10ms}
+      POGO_WS_FANOUT_MODE: ${POGO_WS_FANOUT_MODE:-burst}
+      POGO_WS_FANOUT_ROUND_SIZE: ${POGO_WS_FANOUT_ROUND_SIZE:-16}
+      POGO_WS_FANOUT_ROUND_YIELD: ${POGO_WS_FANOUT_ROUND_YIELD:-0ms}
+      POGO_WS_ENABLE_COMPRESSION: ${POGO_WS_ENABLE_COMPRESSION:-false}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1:8000/fire?count=0 >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  reverb-app:
+    build:
+      context: ../..
+      dockerfile: benchmarks/laravel-broadcast/Dockerfile
+      args:
+        APP_PATH: benchmarks/laravel-broadcast/reverb
+    working_dir: /var/www/html
+    command:
+      ["php", "artisan", "octane:frankenphp", "--host=0.0.0.0", "--port=8000"]
+    environment:
+      <<: *laravel-env
+      BROADCAST_CONNECTION: reverb
+      REVERB_APP_ID: reverb-app
+      REVERB_APP_KEY: reverb-key
+      REVERB_APP_SECRET: reverb-secret
+      REVERB_HOST: reverb-ws
+      REVERB_PORT: 8080
+      REVERB_SCHEME: http
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1:8000/fire?count=0 >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  reverb-ws:
+    build:
+      context: ../..
+      dockerfile: benchmarks/laravel-broadcast/Dockerfile
+      args:
+        APP_PATH: benchmarks/laravel-broadcast/reverb
+    working_dir: /var/www/html
+    command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080"]
+    environment:
+      <<: *laravel-env
+      BROADCAST_CONNECTION: reverb
+      REVERB_APP_ID: reverb-app
+      REVERB_APP_KEY: reverb-key
+      REVERB_APP_SECRET: reverb-secret
+      REVERB_HOST: reverb-ws
+      REVERB_PORT: 8080
+      REVERB_SCHEME: http
+    healthcheck:
+      test:
+        ["CMD-SHELL", 'php -r ''exit(@fsockopen("127.0.0.1",8080) ? 0 : 1);''']
+      interval: 5s
+      timeout: 3s
+      retries: 24
+    depends_on:
+      reverb-app:
+        condition: service_healthy
+
+  k6-pogo:
+    image: grafana/k6:2.0.0
+    user: "${K6_UID:-1000}:${K6_GID:-1000}"
+    command: ["run", "/scripts/benchmark.js"]
+    environment:
+      <<: *k6-env
+      DRIVER: pogo
+      ROLE: both
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      RESULT_FILE: /results/pogo-summary.json
+      METRICS_URL: http://pogo:2019/metrics
+      METRICS_FILE: /results/pogo-metrics.prom
+    volumes:
+      - ./benchmark.js:/scripts/benchmark.js:ro
+      - ./results:/results
+    depends_on:
+      pogo:
+        condition: service_healthy
+
+  k6-pogo-listener-1: &k6-pogo-listener
+    image: grafana/k6:2.0.0
+    user: "${K6_UID:-1000}:${K6_GID:-1000}"
+    command: ["run", "/scripts/benchmark.js"]
+    environment:
+      <<: *k6-env
+      DRIVER: pogo
+      ROLE: listeners
+      VUS: ${SHARD_VUS:-100}
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      RESULT_FILE: /results/pogo-shard-1-summary.json
+    volumes:
+      - ./benchmark.js:/scripts/benchmark.js:ro
+      - ./results:/results
+    depends_on:
+      pogo:
+        condition: service_healthy
+
+  k6-pogo-listener-2:
+    <<: *k6-pogo-listener
+    environment:
+      <<: *k6-env
+      DRIVER: pogo
+      ROLE: listeners
+      VUS: ${SHARD_VUS:-100}
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      RESULT_FILE: /results/pogo-shard-2-summary.json
+
+  k6-pogo-listener-3:
+    <<: *k6-pogo-listener
+    environment:
+      <<: *k6-env
+      DRIVER: pogo
+      ROLE: listeners
+      VUS: ${SHARD_VUS:-100}
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      RESULT_FILE: /results/pogo-shard-3-summary.json
+
+  k6-pogo-listener-4:
+    <<: *k6-pogo-listener
+    environment:
+      <<: *k6-env
+      DRIVER: pogo
+      ROLE: listeners
+      VUS: ${SHARD_VUS:-100}
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      RESULT_FILE: /results/pogo-shard-4-summary.json
+
+  k6-pogo-listener-5:
+    <<: *k6-pogo-listener
+    environment:
+      <<: *k6-env
+      DRIVER: pogo
+      ROLE: listeners
+      VUS: ${SHARD_VUS:-100}
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      RESULT_FILE: /results/pogo-shard-5-summary.json
+
+  k6-pogo-publisher:
+    image: grafana/k6:2.0.0
+    user: "${K6_UID:-1000}:${K6_GID:-1000}"
+    command: ["run", "/scripts/benchmark.js"]
+    environment:
+      <<: *k6-env
+      DRIVER: pogo
+      ROLE: publisher
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      RESULT_FILE: /results/pogo-sharded-publisher-summary.json
+      METRICS_URL: http://pogo:2019/metrics
+      METRICS_FILE: /results/pogo-sharded-metrics.prom
+    volumes:
+      - ./benchmark.js:/scripts/benchmark.js:ro
+      - ./results:/results
+    depends_on:
+      pogo:
+        condition: service_healthy
+
+  go-receiver-pogo:
+    build:
+      context: ../..
+      dockerfile: benchmarks/laravel-broadcast/Dockerfile
+      target: builder
+    working_dir: /websocket
+    command: ["go", "run", "./cmd/bench-receiver"]
+    environment:
+      <<: *go-receiver-env
+      CGO_ENABLED: 0
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      APP_KEY: pogo-app
+      RESULT_FILE: /results/go-receiver-pogo-summary.json
+    volumes:
+      - ./results:/results
+    depends_on:
+      pogo:
+        condition: service_healthy
+
+  go-receiver-pogo-listener-1: &go-receiver-pogo-listener
+    build:
+      context: ../..
+      dockerfile: benchmarks/laravel-broadcast/Dockerfile
+      target: builder
+    working_dir: /websocket
+    command: ["go", "run", "./cmd/bench-receiver"]
+    environment:
+      <<: *go-receiver-env
+      CGO_ENABLED: 0
+      ROLE: listeners
+      VUS: ${SHARD_VUS:-100}
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      APP_KEY: pogo-app
+      RESULT_FILE: /results/go-receiver-shard-1-summary.json
+    volumes:
+      - ./results:/results
+    depends_on:
+      pogo:
+        condition: service_healthy
+
+  go-receiver-pogo-listener-2:
+    <<: *go-receiver-pogo-listener
+    environment:
+      <<: *go-receiver-env
+      CGO_ENABLED: 0
+      ROLE: listeners
+      VUS: ${SHARD_VUS:-100}
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      APP_KEY: pogo-app
+      RESULT_FILE: /results/go-receiver-shard-2-summary.json
+
+  go-receiver-pogo-listener-3:
+    <<: *go-receiver-pogo-listener
+    environment:
+      <<: *go-receiver-env
+      CGO_ENABLED: 0
+      ROLE: listeners
+      VUS: ${SHARD_VUS:-100}
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      APP_KEY: pogo-app
+      RESULT_FILE: /results/go-receiver-shard-3-summary.json
+
+  go-receiver-pogo-listener-4:
+    <<: *go-receiver-pogo-listener
+    environment:
+      <<: *go-receiver-env
+      CGO_ENABLED: 0
+      ROLE: listeners
+      VUS: ${SHARD_VUS:-100}
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      APP_KEY: pogo-app
+      RESULT_FILE: /results/go-receiver-shard-4-summary.json
+
+  go-receiver-pogo-listener-5:
+    <<: *go-receiver-pogo-listener
+    environment:
+      <<: *go-receiver-env
+      CGO_ENABLED: 0
+      ROLE: listeners
+      VUS: ${SHARD_VUS:-100}
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      APP_KEY: pogo-app
+      RESULT_FILE: /results/go-receiver-shard-5-summary.json
+
+  go-receiver-pogo-publisher:
+    build:
+      context: ../..
+      dockerfile: benchmarks/laravel-broadcast/Dockerfile
+      target: builder
+    working_dir: /websocket
+    command: ["go", "run", "./cmd/bench-receiver"]
+    environment:
+      <<: *go-receiver-env
+      CGO_ENABLED: 0
+      ROLE: publisher
+      HTTP_HOST: pogo
+      WS_HOST: pogo
+      HTTP_PORT: 8000
+      WS_PORT: 8000
+      APP_KEY: pogo-app
+      RESULT_FILE: /results/go-receiver-sharded-publisher-summary.json
+      METRICS_URL: http://pogo:2019/metrics
+      METRICS_FILE: /results/go-receiver-sharded-metrics.prom
+    volumes:
+      - ./results:/results
+    depends_on:
+      pogo:
+        condition: service_healthy
+
+  k6-reverb:
+    image: grafana/k6:2.0.0
+    user: "${K6_UID:-1000}:${K6_GID:-1000}"
+    command: ["run", "/scripts/benchmark.js"]
+    environment:
+      <<: *k6-env
+      DRIVER: reverb
+      ROLE: both
+      HTTP_HOST: reverb-app
+      WS_HOST: reverb-ws
+      HTTP_PORT: 8000
+      WS_PORT: 8080
+      RESULT_FILE: /results/reverb-summary.json
+    volumes:
+      - ./benchmark.js:/scripts/benchmark.js:ro
+      - ./results:/results
+    depends_on:
+      reverb-app:
+        condition: service_healthy
+      reverb-ws:
+        condition: service_healthy

@@ -1,0 +1,59 @@
+{
+    {$CADDY_GLOBAL_OPTIONS}
+
+    admin {$CADDY_SERVER_ADMIN_HOST}:{$CADDY_SERVER_ADMIN_PORT}
+
+    order pogo_websocket before php_server
+
+    frankenphp {
+        worker {
+            file "{$APP_PUBLIC_PATH}/frankenphp-worker.php"
+            {$CADDY_SERVER_WORKER_DIRECTIVE}
+            {$CADDY_SERVER_WATCH_DIRECTIVES}
+        }
+    }
+
+    metrics {
+        per_host
+    }
+}
+
+{$CADDY_SERVER_SERVER_NAME} {
+    log {
+        level {$CADDY_SERVER_LOG_LEVEL}
+        format {$CADDY_SERVER_LOGGER}
+    }
+
+    route /app/* {
+        pogo_websocket {
+            app_id          pogo-app
+            auth_path       /pogo/auth
+            auth_script     "{$APP_PUBLIC_PATH}/pogo-auth-worker.php"
+            num_workers     2
+            outbound_queue_size {$POGO_WS_OUTBOUND_QUEUE_SIZE:256}
+            write_burst_size {$POGO_WS_WRITE_BURST_SIZE:64}
+            fanout_backpressure_threshold {$POGO_WS_FANOUT_BACKPRESSURE_THRESHOLD:16}
+            fanout_backpressure_max_wait {$POGO_WS_FANOUT_BACKPRESSURE_MAX_WAIT:10ms}
+            fanout_mode {$POGO_WS_FANOUT_MODE:burst}
+            fanout_round_size {$POGO_WS_FANOUT_ROUND_SIZE:16}
+            fanout_round_yield {$POGO_WS_FANOUT_ROUND_YIELD:0ms}
+            enable_compression {$POGO_WS_ENABLE_COMPRESSION:false}
+
+            webhook_url     http://localhost/webhook
+            webhook_secret  super-secret-key
+
+            # redis_host      localhost:6379
+        }
+    }
+
+    route {
+        root * "{$APP_PUBLIC_PATH}"
+        encode zstd br gzip
+
+        php_server {
+            index frankenphp-worker.php
+            try_files {path} frankenphp-worker.php
+            resolve_root_symlink
+        }
+    }
+}
