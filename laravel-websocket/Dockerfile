@@ -1,4 +1,4 @@
-FROM dunglas/frankenphp:1.12.2-builder-php8.5-trixie AS builder
+FROM dunglas/frankenphp:1.12.3-builder-php8.5-trixie AS builder
 
 COPY --from=caddy:builder /usr/bin/xcaddy /usr/bin/xcaddy
 
@@ -9,8 +9,8 @@ RUN CGO_ENABLED=1 \
     CGO_LDFLAGS="$(php-config --ldflags) $(php-config --libs)" \
     xcaddy build \
     --output /usr/local/bin/frankenphp \
-    --with github.com/dunglas/frankenphp@v1.12.2 \
-    --with github.com/dunglas/frankenphp/caddy@v1.12.2 \
+    --with github.com/dunglas/frankenphp@v1.12.3 \
+    --with github.com/dunglas/frankenphp/caddy@v1.12.3 \
     --with github.com/dunglas/caddy-cbrotli@v1.0.1 \
     --with github.com/y-l-g/websocket/module@main
 
