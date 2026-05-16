@@ -14,15 +14,6 @@
         "laravel/tinker": "^3.0",
         "pogo/websocket": "*"
     },
-    "repositories": [
-        {
-            "type": "path",
-            "url": "../../..",
-            "options": {
-                "symlink": false
-            }
-        }
-    ],
     "require-dev": {
         "fakerphp/faker": "^1.0",
         "laravel/pail": "^1.0",
