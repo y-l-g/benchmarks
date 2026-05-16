@@ -14,6 +14,28 @@ RUN CGO_ENABLED=1 \
     --with github.com/dunglas/caddy-cbrotli@v1.0.1 \
     --with github.com/y-l-g/websocket/module@main
 
+FROM golang:1.26.3-bookworm AS bench-receiver-builder
+
+WORKDIR /src
+
+COPY bench-receiver/go.mod bench-receiver/go.sum ./
+
+RUN go mod download
+
+COPY bench-receiver/. ./
+
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /usr/local/bin/bench-receiver .
+
+FROM debian:trixie-slim AS bench-receiver
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=bench-receiver-builder /usr/local/bin/bench-receiver /usr/local/bin/bench-receiver
+
+ENTRYPOINT ["/usr/local/bin/bench-receiver"]
+
 FROM serversideup/php:8.5.6-frankenphp-trixie
 
 COPY --from=builder /usr/local/bin/frankenphp /usr/local/bin/frankenphp

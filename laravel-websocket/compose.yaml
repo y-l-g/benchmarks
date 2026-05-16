@@ -35,10 +35,9 @@ x-go-receiver-env: &go-receiver-env
 services:
   pogo:
     build:
-      context: ../..
-      dockerfile: benchmarks/laravel-websocket/Dockerfile
+      context: .
       args:
-        APP_PATH: benchmarks/laravel-websocket/pogo
+        APP_PATH: pogo
     working_dir: /var/www/html
     command:
       [
@@ -80,10 +79,9 @@ services:
 
   reverb-app:
     build:
-      context: ../..
-      dockerfile: benchmarks/laravel-websocket/Dockerfile
+      context: .
       args:
-        APP_PATH: benchmarks/laravel-websocket/reverb
+        APP_PATH: reverb
     working_dir: /var/www/html
     command:
       ["php", "artisan", "octane:frankenphp", "--host=0.0.0.0", "--port=8000"]
@@ -108,10 +106,9 @@ services:
 
   reverb-ws:
     build:
-      context: ../..
-      dockerfile: benchmarks/laravel-websocket/Dockerfile
+      context: .
       args:
-        APP_PATH: benchmarks/laravel-websocket/reverb
+        APP_PATH: reverb
     working_dir: /var/www/html
     command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080"]
     environment:
@@ -252,11 +249,8 @@ services:
 
   go-receiver-pogo:
     build:
-      context: ../..
-      dockerfile: benchmarks/laravel-websocket/Dockerfile
-      target: builder
-    working_dir: /websocket
-    command: ["go", "run", "./cmd/bench-receiver"]
+      context: .
+      target: bench-receiver
     environment:
       <<: *go-receiver-env
       CGO_ENABLED: 0
@@ -274,11 +268,8 @@ services:
 
   go-receiver-pogo-listener-1: &go-receiver-pogo-listener
     build:
-      context: ../..
-      dockerfile: benchmarks/laravel-websocket/Dockerfile
-      target: builder
-    working_dir: /websocket
-    command: ["go", "run", "./cmd/bench-receiver"]
+      context: .
+      target: bench-receiver
     environment:
       <<: *go-receiver-env
       CGO_ENABLED: 0
@@ -354,11 +345,8 @@ services:
 
   go-receiver-pogo-publisher:
     build:
-      context: ../..
-      dockerfile: benchmarks/laravel-websocket/Dockerfile
-      target: builder
-    working_dir: /websocket
-    command: ["go", "run", "./cmd/bench-receiver"]
+      context: .
+      target: bench-receiver
     environment:
       <<: *go-receiver-env
       CGO_ENABLED: 0
