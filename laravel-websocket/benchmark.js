@@ -61,7 +61,6 @@ const wsUrl = `ws://${WS_HOST}:${WS_PORT}/app/${APP_KEY}?protocol=7&client=js&ve
 const msgLatencyMs = new Trend("msg_latency_ms");
 const eventCreatedToReceivedMs = new Trend("event_created_to_received_ms");
 const eventSentToReceivedMs = new Trend("event_sent_to_received_ms");
-const pogoPhpBroadcastToReceivedMs = new Trend("pogo_php_broadcast_to_received_ms");
 const publishDurationMs = new Trend("publish_duration_ms");
 const msgsReceived = new Counter("msgs_received");
 const subscriptionsSucceeded = new Counter("subscriptions_succeeded");
@@ -212,15 +211,12 @@ function scrapePrometheusMetrics() {
     scrape,
     text: res.body,
     derived: {
-      fanoutBackpressureWaitSeconds: histogramSummary(samples, "pogo_websocket_fanout_backpressure_wait_seconds"),
       fanoutSubscribers: histogramSummary(samples, "pogo_websocket_fanout_subscribers"),
-      phpToGoEntryDelaySeconds: histogramSummary(samples, "pogo_websocket_php_to_go_entry_delay_seconds"),
       publishValidateSeconds: histogramSummary(samples, "pogo_websocket_publish_duration_seconds", { phase: "validate" }),
       publishBrokerSeconds: histogramSummary(samples, "pogo_websocket_publish_duration_seconds", { phase: "broker" }),
       publishTotalSeconds: histogramSummary(samples, "pogo_websocket_publish_duration_seconds", { phase: "total" }),
       brokerToHubDelaySeconds: histogramSummary(samples, "pogo_websocket_broker_to_hub_delay_seconds"),
       hubToShardDelaySeconds: histogramSummary(samples, "pogo_websocket_hub_to_shard_delay_seconds"),
-      writeCompleteFromSentSeconds: histogramSummary(samples, "pogo_websocket_write_complete_to_payload_sent_seconds"),
       clientQueueDepth: histogramSummary(samples, "pogo_websocket_client_queue_depth"),
       clientQueueResidenceSeconds: histogramSummary(samples, "pogo_websocket_client_queue_residence_seconds"),
       writeDurationPreparedSeconds: histogramSummary(samples, "pogo_websocket_write_duration_seconds", { kind: "prepared" }),
@@ -240,13 +236,6 @@ function scrapePrometheusMetrics() {
       deliveryConfig: {
         outboundQueueSize: counterValue(samples, "pogo_websocket_delivery_config", { key: "outbound_queue_size" }),
         writeBurstSize: counterValue(samples, "pogo_websocket_delivery_config", { key: "write_burst_size" }),
-        fanoutBackpressureThreshold: counterValue(samples, "pogo_websocket_delivery_config", { key: "fanout_backpressure_threshold" }),
-        fanoutBackpressureMaxWaitMs:
-          counterValue(samples, "pogo_websocket_delivery_config", { key: "fanout_backpressure_max_wait_seconds" }) * 1000,
-        fanoutModePaced: counterValue(samples, "pogo_websocket_delivery_config", { key: "fanout_mode_paced" }),
-        fanoutRoundSize: counterValue(samples, "pogo_websocket_delivery_config", { key: "fanout_round_size" }),
-        fanoutRoundYieldMs:
-          counterValue(samples, "pogo_websocket_delivery_config", { key: "fanout_round_yield_seconds" }) * 1000,
         enableCompression: counterValue(samples, "pogo_websocket_delivery_config", { key: "enable_compression" }),
       },
     },
@@ -346,9 +335,6 @@ export function listener() {
           eventSentToReceivedMs.add(sentToReceived);
           msgLatencyMs.add(sentToReceived);
         }
-        if (Number.isFinite(payload.pogoPhpBroadcastAt)) {
-          pogoPhpBroadcastToReceivedMs.add(Math.max(0, receivedAt - payload.pogoPhpBroadcastAt));
-        }
         msgsReceived.add(1);
       } catch (_) {
         parseErrors.add(1);
@@ -394,12 +380,6 @@ export function handleSummary(data) {
   const missing = Math.max(0, totalExpectedMessages - observed);
   const diagnostics = prometheus.derived
     ? {
-        fanoutBackpressureWaitP95Ms: prometheus.derived.fanoutBackpressureWaitSeconds?.p95 == null
-          ? null
-          : prometheus.derived.fanoutBackpressureWaitSeconds.p95 * 1000,
-        phpToGoEntryDelayP95Ms: prometheus.derived.phpToGoEntryDelaySeconds?.p95 == null
-          ? null
-          : prometheus.derived.phpToGoEntryDelaySeconds.p95 * 1000,
         publishTotalP95Ms: prometheus.derived.publishTotalSeconds?.p95 == null
           ? null
           : prometheus.derived.publishTotalSeconds.p95 * 1000,
@@ -412,9 +392,6 @@ export function handleSummary(data) {
         hubToShardDelayP95Ms: prometheus.derived.hubToShardDelaySeconds?.p95 == null
           ? null
           : prometheus.derived.hubToShardDelaySeconds.p95 * 1000,
-        writeCompleteFromSentP95Ms: prometheus.derived.writeCompleteFromSentSeconds?.p95 == null
-          ? null
-          : prometheus.derived.writeCompleteFromSentSeconds.p95 * 1000,
         clientQueueDepthP95: prometheus.derived.clientQueueDepth?.p95 ?? null,
         clientQueueDepthP99: prometheus.derived.clientQueueDepth?.p99 ?? null,
         clientQueueResidenceP95Ms: prometheus.derived.clientQueueResidenceSeconds?.p95 == null
@@ -438,11 +415,6 @@ export function handleSummary(data) {
         dataWriteFailuresTotal: prometheus.derived.dataWriteFailuresTotal,
         outboundQueueSize: prometheus.derived.deliveryConfig.outboundQueueSize,
         writeBurstSize: prometheus.derived.deliveryConfig.writeBurstSize,
-        fanoutBackpressureThreshold: prometheus.derived.deliveryConfig.fanoutBackpressureThreshold,
-        fanoutBackpressureMaxWaitMs: prometheus.derived.deliveryConfig.fanoutBackpressureMaxWaitMs,
-        fanoutModePaced: prometheus.derived.deliveryConfig.fanoutModePaced,
-        fanoutRoundSize: prometheus.derived.deliveryConfig.fanoutRoundSize,
-        fanoutRoundYieldMs: prometheus.derived.deliveryConfig.fanoutRoundYieldMs,
         enableCompression: prometheus.derived.deliveryConfig.enableCompression,
       }
     : null;
@@ -492,8 +464,6 @@ export function handleSummary(data) {
       eventCreatedToReceivedP99Ms: percentile("event_created_to_received_ms", "p(99)"),
       eventSentToReceivedP95Ms: percentile("event_sent_to_received_ms", "p(95)"),
       eventSentToReceivedP99Ms: percentile("event_sent_to_received_ms", "p(99)"),
-      pogoPhpBroadcastToReceivedP95Ms: percentile("pogo_php_broadcast_to_received_ms", "p(95)"),
-      pogoPhpBroadcastToReceivedP99Ms: percentile("pogo_php_broadcast_to_received_ms", "p(99)"),
       publishP95Ms: percentile("publish_duration_ms", "p(95)"),
       publishP99Ms: percentile("publish_duration_ms", "p(99)"),
     },
@@ -513,12 +483,6 @@ export function handleSummary(data) {
     if (diagnostics.clientQueueDepthP99 != null) {
       diagnosticLines.push(`client_queue_depth_p99=${diagnostics.clientQueueDepthP99}`);
     }
-    if (diagnostics.fanoutBackpressureWaitP95Ms != null) {
-      diagnosticLines.push(`fanout_backpressure_wait_p95_ms=${diagnostics.fanoutBackpressureWaitP95Ms}`);
-    }
-    if (diagnostics.phpToGoEntryDelayP95Ms != null) {
-      diagnosticLines.push(`php_to_go_entry_delay_p95_ms=${diagnostics.phpToGoEntryDelayP95Ms}`);
-    }
     if (diagnostics.publishTotalP95Ms != null) {
       diagnosticLines.push(`publish_total_p95_ms=${diagnostics.publishTotalP95Ms}`);
     }
@@ -530,9 +494,6 @@ export function handleSummary(data) {
     }
     if (diagnostics.hubToShardDelayP95Ms != null) {
       diagnosticLines.push(`hub_to_shard_p95_ms=${diagnostics.hubToShardDelayP95Ms}`);
-    }
-    if (diagnostics.writeCompleteFromSentP95Ms != null) {
-      diagnosticLines.push(`write_complete_from_sent_p95_ms=${diagnostics.writeCompleteFromSentP95Ms}`);
     }
     if (diagnostics.clientQueueResidenceP95Ms != null) {
       diagnosticLines.push(`client_queue_residence_p95_ms=${diagnostics.clientQueueResidenceP95Ms}`);
@@ -551,11 +512,6 @@ export function handleSummary(data) {
     }
     diagnosticLines.push(`delivery_outbound_queue_size=${diagnostics.outboundQueueSize}`);
     diagnosticLines.push(`delivery_write_burst_size=${diagnostics.writeBurstSize}`);
-    diagnosticLines.push(`delivery_fanout_backpressure_threshold=${diagnostics.fanoutBackpressureThreshold}`);
-    diagnosticLines.push(`delivery_fanout_backpressure_max_wait_ms=${diagnostics.fanoutBackpressureMaxWaitMs}`);
-    diagnosticLines.push(`delivery_fanout_mode_paced=${diagnostics.fanoutModePaced}`);
-    diagnosticLines.push(`delivery_fanout_round_size=${diagnostics.fanoutRoundSize}`);
-    diagnosticLines.push(`delivery_fanout_round_yield_ms=${diagnostics.fanoutRoundYieldMs}`);
     diagnosticLines.push(`delivery_enable_compression=${diagnostics.enableCompression}`);
     diagnosticLines.push(`client_dropped_messages=${diagnostics.clientDroppedMessagesTotal}`);
     diagnosticLines.push(`broker_dropped_messages=${diagnostics.brokerDroppedMessagesTotal}`);
@@ -579,7 +535,6 @@ export function handleSummary(data) {
       `msg_latency_p95_ms=${summary.latency.messageP95Ms}`,
       `event_created_to_received_p95_ms=${summary.latency.eventCreatedToReceivedP95Ms}`,
       `event_sent_to_received_p95_ms=${summary.latency.eventSentToReceivedP95Ms}`,
-      `pogo_php_broadcast_to_received_p95_ms=${summary.latency.pogoPhpBroadcastToReceivedP95Ms}`,
       `publish_duration_p95_ms=${summary.latency.publishP95Ms}`,
       `prometheus_metrics_ok=${prometheus.scrape.ok || false}`,
       ...diagnosticLines,

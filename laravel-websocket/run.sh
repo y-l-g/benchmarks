@@ -204,25 +204,20 @@ write_meta() {
 }
 
 write_audit_header() {
-  printf 'scenario\tprobe\tdriver\trole\tvus\tmsg_count\tpayload_size\tpublish_batches\tcompression\tdelivery_completeness\treceive_p95_ms\treceive_p99_ms\twrite_complete_from_sent_p95_ms\tconnect_errors\tparse_errors\tread_errors\tpublish_errors\tconfig_match\n' > "$AUDIT_FILE"
+  printf 'scenario\tprobe\tdriver\trole\tvus\tmsg_count\tpayload_size\tpublish_batches\tcompression\tdelivery_completeness\treceive_p95_ms\treceive_p99_ms\tconnect_errors\tparse_errors\tread_errors\tpublish_errors\tconfig_match\n' > "$AUDIT_FILE"
 }
 
 write_k6_row() {
   local scenario="$1"
   local driver="$2"
   local file="$3"
-  local write_p95="null"
   local completeness
 
   completeness="$(json_number "$file" completeness)"
-  if [ "$driver" = "pogo" ]; then
-    write_p95="$(json_number "$file" writeCompleteFromSentP95Ms)"
-    assert_present "$scenario writeCompleteFromSentP95Ms" "$write_p95"
-  fi
 
   assert_number_equals "$scenario delivery completeness" "$completeness" "1"
 
-  printf '%s\tk6\t%s\tboth\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0\t0\t0\ttrue\n' \
+  printf '%s\tk6\t%s\tboth\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0\t0\t0\ttrue\n' \
     "$scenario" \
     "$driver" \
     "$(json_number "$file" vus)" \
@@ -232,8 +227,7 @@ write_k6_row() {
     "$BASE_COMPRESSION" \
     "$completeness" \
     "$(json_number "$file" eventSentToReceivedP95Ms)" \
-    "$(json_number "$file" eventSentToReceivedP99Ms)" \
-    "$write_p95" >> "$AUDIT_FILE"
+    "$(json_number "$file" eventSentToReceivedP99Ms)" >> "$AUDIT_FILE"
 }
 
 write_go_row() {
@@ -260,14 +254,13 @@ write_go_row() {
   assert_zero "$scenario parse errors" "$(json_number "$file" parseErrors)"
   assert_zero "$scenario read errors" "$(json_number "$file" readErrors)"
   assert_zero "$scenario publish errors" "$(json_number "$file" publishErrors)"
-  assert_present "$scenario writeCompleteFromSentP95Ms" "$(json_number "$file" writeCompleteFromSentP95Ms)"
 
   if [ "$config_match" != "true" ]; then
     printf 'FAILED: %s effective compression did not match %s\n' "$scenario" "$compression" >&2
     exit 1
   fi
 
-  printf '%s\tgo-receiver\tpogo\tboth\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\tgo-receiver\tpogo\tboth\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$scenario" \
     "$(json_number "$file" vus)" \
     "$(json_number "$file" msgCount)" \
@@ -277,7 +270,6 @@ write_go_row() {
     "$(json_number "$file" deliveryCompleteness)" \
     "$(json_number "$file" sentToReadP95Ms)" \
     "$(json_number "$file" sentToReadP99Ms)" \
-    "$(json_number "$file" writeCompleteFromSentP95Ms)" \
     "$(json_number "$file" connectErrors)" \
     "$(json_number "$file" parseErrors)" \
     "$(json_number "$file" readErrors)" \
@@ -301,9 +293,8 @@ write_go_sharded_row() {
   assert_zero "$scenario parse errors" "$(max_json_number parseErrors "${shards[@]}")"
   assert_zero "$scenario read errors" "$(max_json_number readErrors "${shards[@]}")"
   assert_zero "$scenario publish errors" "$(json_number "$publisher" publishErrors)"
-  assert_present "$scenario writeCompleteFromSentP95Ms" "$(json_number "$publisher" writeCompleteFromSentP95Ms)"
 
-  printf '%s\tgo-receiver\tpogo\tsharded\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\ttrue\n' \
+  printf '%s\tgo-receiver\tpogo\tsharded\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\ttrue\n' \
     "$scenario" \
     "$((BASE_SHARD_VUS * 5))" \
     "$BASE_MSG_COUNT" \
@@ -313,7 +304,6 @@ write_go_sharded_row() {
     "$(min_json_number deliveryCompleteness "${shards[@]}")" \
     "$(max_json_number sentToReadP95Ms "${shards[@]}")" \
     "$(max_json_number sentToReadP99Ms "${shards[@]}")" \
-    "$(json_number "$publisher" writeCompleteFromSentP95Ms)" \
     "$(max_json_number connectErrors "${shards[@]}")" \
     "$(max_json_number parseErrors "${shards[@]}")" \
     "$(max_json_number readErrors "${shards[@]}")" \

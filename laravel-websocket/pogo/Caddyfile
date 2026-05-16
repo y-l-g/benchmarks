@@ -32,11 +32,6 @@
             num_workers     2
             outbound_queue_size {$POGO_WS_OUTBOUND_QUEUE_SIZE:256}
             write_burst_size {$POGO_WS_WRITE_BURST_SIZE:64}
-            fanout_backpressure_threshold {$POGO_WS_FANOUT_BACKPRESSURE_THRESHOLD:16}
-            fanout_backpressure_max_wait {$POGO_WS_FANOUT_BACKPRESSURE_MAX_WAIT:10ms}
-            fanout_mode {$POGO_WS_FANOUT_MODE:burst}
-            fanout_round_size {$POGO_WS_FANOUT_ROUND_SIZE:16}
-            fanout_round_yield {$POGO_WS_FANOUT_ROUND_YIELD:0ms}
             enable_compression {$POGO_WS_ENABLE_COMPRESSION:false}
 
             webhook_url     http://localhost/webhook

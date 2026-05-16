@@ -84,16 +84,16 @@ func TestDecorateDialErrorIncludesStatusAndBody(t *testing.T) {
 
 func TestPrometheusHistogramQuantile(t *testing.T) {
 	text := `
-# HELP pogo_websocket_write_complete_to_payload_sent_seconds test
-pogo_websocket_write_complete_to_payload_sent_seconds_bucket{le="0.01"} 10
-pogo_websocket_write_complete_to_payload_sent_seconds_bucket{le="0.05"} 95
-pogo_websocket_write_complete_to_payload_sent_seconds_bucket{le="0.1"} 100
-pogo_websocket_write_complete_to_payload_sent_seconds_bucket{le="+Inf"} 100
-pogo_websocket_write_complete_to_payload_sent_seconds_sum 2.0
-pogo_websocket_write_complete_to_payload_sent_seconds_count 100
+# HELP pogo_websocket_client_queue_residence_seconds test
+pogo_websocket_client_queue_residence_seconds_bucket{le="0.01"} 10
+pogo_websocket_client_queue_residence_seconds_bucket{le="0.05"} 95
+pogo_websocket_client_queue_residence_seconds_bucket{le="0.1"} 100
+pogo_websocket_client_queue_residence_seconds_bucket{le="+Inf"} 100
+pogo_websocket_client_queue_residence_seconds_sum 2.0
+pogo_websocket_client_queue_residence_seconds_count 100
 `
 
-	got, ok := prometheusHistogramQuantile(text, "pogo_websocket_write_complete_to_payload_sent_seconds", 0.95)
+	got, ok := prometheusHistogramQuantile(text, "pogo_websocket_client_queue_residence_seconds", 0.95)
 	if !ok {
 		t.Fatal("prometheusHistogramQuantile returned ok=false")
 	}

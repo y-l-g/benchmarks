@@ -28,7 +28,9 @@ The sharded Go receiver scenario starts five listener containers at `SHARD_VUS=1
 
 The Go receiver accepts the same core benchmark environment as k6 (`ROLE`, `VUS`, `MSG_COUNT`, `PAYLOAD_SIZE`, `PUBLISH_BATCHES`, `BATCH_INTERVAL_SECONDS`, `RAMP_UP_SECONDS`, `PUBLISH_START_SECONDS`, `PUBLISH_MAX_DURATION_SECONDS`, `DRAIN_SECONDS`, `HTTP_HOST`, `WS_HOST`, ports, `APP_KEY`, `RESULT_FILE`, `METRICS_URL`, and `METRICS_FILE`). `ROLE=both` is the default; `ROLE=listeners` opens websocket listeners only, and `ROLE=publisher` triggers `/fire` only.
 
-The Pogo benchmark app also accepts delivery-tuning overrides: `POGO_WS_OUTBOUND_QUEUE_SIZE`, `POGO_WS_WRITE_BURST_SIZE`, `POGO_WS_FANOUT_BACKPRESSURE_THRESHOLD`, `POGO_WS_FANOUT_BACKPRESSURE_MAX_WAIT`, `POGO_WS_FANOUT_MODE`, `POGO_WS_FANOUT_ROUND_SIZE`, `POGO_WS_FANOUT_ROUND_YIELD`, and `POGO_WS_ENABLE_COMPRESSION`.
+The Pogo benchmark app also accepts delivery-tuning overrides: `POGO_WS_OUTBOUND_QUEUE_SIZE`, `POGO_WS_WRITE_BURST_SIZE`, and `POGO_WS_ENABLE_COMPRESSION`.
+
+Benchmarks measure end-to-end receive latency from benchmark clients. The websocket server does not inspect or mutate user payload JSON to produce benchmark timestamp metrics.
 
 If `HOLD_SECONDS` is not set, the benchmark derives it from `PUBLISH_START_SECONDS + PUBLISH_MAX_DURATION_SECONDS + DRAIN_SECONDS - RAMP_UP_SECONDS`. If `HOLD_SECONDS` is set too low, k6 aborts instead of writing a misleading delivery summary.
 
