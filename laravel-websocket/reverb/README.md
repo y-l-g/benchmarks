@@ -13,7 +13,7 @@ php artisan key:generate
 php artisan migrate --force
 ```
 
-Start the Laravel HTTP app and Reverb websocket server according to the Laravel Reverb setup, then from `benchmarks/laravel-websocket` run:
+Start the Laravel HTTP app and Reverb websocket server according to the Laravel Reverb setup, then from `laravel-websocket` run:
 
 ```bash
 DRIVER=reverb HOST=localhost HTTP_PORT=8000 WS_PORT=8080 k6 run benchmark.js

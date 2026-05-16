@@ -40,7 +40,7 @@ FROM serversideup/php:8.5.6-frankenphp-trixie
 
 COPY --from=builder /usr/local/bin/frankenphp /usr/local/bin/frankenphp
 
-ARG APP_PATH=benchmarks/laravel-websocket/pogo
+ARG APP_PATH=pogo
 
 COPY --chown=www-data:www-data ${APP_PATH}/. /var/www/html/
 
@@ -48,7 +48,8 @@ WORKDIR /var/www/html
 
 USER www-data
 
-RUN composer install -v \
+RUN rm -f bootstrap/cache/packages.php bootstrap/cache/services.php \
+    && composer install -v \
     --no-dev \
     --optimize-autoloader \
     --no-scripts \

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BENCH_DIR="$ROOT_DIR/benchmarks/laravel-websocket"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BENCH_DIR="$ROOT_DIR/laravel-websocket"
 COMPOSE_FILE="$BENCH_DIR/compose.yaml"
 RESULTS_DIR="$BENCH_DIR/results"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
