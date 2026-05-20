@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -92,6 +94,43 @@ func TestMergeHistograms(t *testing.T) {
 	}
 	if merged[1].UpperBoundMs != 5 || merged[1].Count != 1 {
 		t.Fatalf("second merged bucket = %#v, want upperBound=5 count=1", merged[1])
+	}
+}
+
+func TestRunAggregateRejectsObservedMessagesWithoutHistogram(t *testing.T) {
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "shard.json")
+	outputFile := filepath.Join(dir, "aggregate.json")
+	input := summary{
+		Driver: "pogo",
+		Config: config{
+			VUs:            1,
+			MsgCount:       1,
+			PayloadSize:    16,
+			PublishBatches: 1,
+		},
+		Delivery: delivery{
+			ObservedMessages: 1,
+		},
+	}
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal input summary: %v", err)
+	}
+	if err := os.WriteFile(inputFile, encoded, 0o644); err != nil {
+		t.Fatalf("write input summary: %v", err)
+	}
+
+	err = runAggregate(config{
+		Driver:         "pogo",
+		ResultFile:     outputFile,
+		AggregateFiles: inputFile,
+	})
+	if err == nil {
+		t.Fatal("runAggregate returned nil error")
+	}
+	if !strings.Contains(err.Error(), "no latency histogram") {
+		t.Fatalf("runAggregate error = %q, want missing histogram error", err)
 	}
 }
 

@@ -265,6 +265,9 @@ func runAggregate(cfg config) error {
 		if err := json.Unmarshal(encoded, &decoded); err != nil {
 			return fmt.Errorf("decode aggregate summary %s: %w", file, err)
 		}
+		if decoded.Delivery.ObservedMessages > 0 && len(decoded.Latency.Histogram) == 0 {
+			return fmt.Errorf("aggregate summary %s has %d observed messages but no latency histogram; rebuild the go receiver listener images", file, decoded.Delivery.ObservedMessages)
+		}
 		inputs = append(inputs, decoded)
 	}
 

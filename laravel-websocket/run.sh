@@ -380,6 +380,7 @@ write_go_sharded_row() {
   assert_zero "$scenario parse errors" "$(max_json_number parseErrors "${shards[@]}")"
   assert_zero "$scenario read errors" "$(max_json_number readErrors "${shards[@]}")"
   assert_zero "$scenario publish errors" "$(json_number "$publisher" publishErrors)"
+  assert_present "$scenario data write failures" "$(json_number "$publisher" dataWriteFailuresTotal)"
   assert_zero "$scenario data write failures" "$(json_number "$publisher" dataWriteFailuresTotal)"
 
   effective_compression="$(json_number "$publisher" enableCompression)"
@@ -430,7 +431,19 @@ build_images() {
     build_args+=(--no-cache)
   fi
 
-  build_args+=(pogo reverb-app reverb-ws go-receiver-pogo go-receiver-reverb)
+  build_args+=(
+    pogo
+    reverb-app
+    reverb-ws
+    go-receiver-pogo
+    go-receiver-pogo-listener-1
+    go-receiver-pogo-listener-2
+    go-receiver-pogo-listener-3
+    go-receiver-pogo-listener-4
+    go-receiver-pogo-listener-5
+    go-receiver-pogo-publisher
+    go-receiver-reverb
+  )
   compose "${build_args[@]}"
   compose images > "$RESULTS_DIR/run-$STAMP-images.txt"
 }
