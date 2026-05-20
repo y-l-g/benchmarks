@@ -38,6 +38,7 @@ services:
       context: .
       args:
         APP_PATH: pogo
+        POGO_WS_MODULE_REF: ${POGO_WS_MODULE_REF:-3a48a17503f71f5b1cfb2ec9f3c7115b64046736}
     working_dir: /var/www/html
     command:
       [
@@ -77,6 +78,7 @@ services:
       context: .
       args:
         APP_PATH: reverb
+        POGO_WS_MODULE_REF: ${POGO_WS_MODULE_REF:-3a48a17503f71f5b1cfb2ec9f3c7115b64046736}
     working_dir: /var/www/html
     command:
       ["php", "artisan", "octane:frankenphp", "--host=0.0.0.0", "--port=8000"]
@@ -104,6 +106,7 @@ services:
       context: .
       args:
         APP_PATH: reverb
+        POGO_WS_MODULE_REF: ${POGO_WS_MODULE_REF:-3a48a17503f71f5b1cfb2ec9f3c7115b64046736}
     working_dir: /var/www/html
     command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080"]
     environment:
@@ -137,9 +140,9 @@ services:
       WS_HOST: pogo
       HTTP_PORT: 8000
       WS_PORT: 8000
-      RESULT_FILE: /results/pogo-summary.json
+      RESULT_FILE: ${K6_POGO_RESULT_FILE:-/results/pogo-summary.json}
       METRICS_URL: http://pogo:2019/metrics
-      METRICS_FILE: /results/pogo-metrics.prom
+      METRICS_FILE: ${K6_POGO_METRICS_FILE:-/results/pogo-metrics.prom}
     volumes:
       - ./benchmark.js:/scripts/benchmark.js:ro
       - ./results:/results
@@ -160,7 +163,7 @@ services:
       WS_HOST: pogo
       HTTP_PORT: 8000
       WS_PORT: 8000
-      RESULT_FILE: /results/pogo-shard-1-summary.json
+      RESULT_FILE: ${K6_POGO_SHARD_1_RESULT_FILE:-/results/pogo-shard-1-summary.json}
     volumes:
       - ./benchmark.js:/scripts/benchmark.js:ro
       - ./results:/results
@@ -179,7 +182,7 @@ services:
       WS_HOST: pogo
       HTTP_PORT: 8000
       WS_PORT: 8000
-      RESULT_FILE: /results/pogo-shard-2-summary.json
+      RESULT_FILE: ${K6_POGO_SHARD_2_RESULT_FILE:-/results/pogo-shard-2-summary.json}
 
   k6-pogo-listener-3:
     <<: *k6-pogo-listener
@@ -192,7 +195,7 @@ services:
       WS_HOST: pogo
       HTTP_PORT: 8000
       WS_PORT: 8000
-      RESULT_FILE: /results/pogo-shard-3-summary.json
+      RESULT_FILE: ${K6_POGO_SHARD_3_RESULT_FILE:-/results/pogo-shard-3-summary.json}
 
   k6-pogo-listener-4:
     <<: *k6-pogo-listener
@@ -205,7 +208,7 @@ services:
       WS_HOST: pogo
       HTTP_PORT: 8000
       WS_PORT: 8000
-      RESULT_FILE: /results/pogo-shard-4-summary.json
+      RESULT_FILE: ${K6_POGO_SHARD_4_RESULT_FILE:-/results/pogo-shard-4-summary.json}
 
   k6-pogo-listener-5:
     <<: *k6-pogo-listener
@@ -218,7 +221,7 @@ services:
       WS_HOST: pogo
       HTTP_PORT: 8000
       WS_PORT: 8000
-      RESULT_FILE: /results/pogo-shard-5-summary.json
+      RESULT_FILE: ${K6_POGO_SHARD_5_RESULT_FILE:-/results/pogo-shard-5-summary.json}
 
   k6-pogo-publisher:
     image: grafana/k6:2.0.0
@@ -232,9 +235,9 @@ services:
       WS_HOST: pogo
       HTTP_PORT: 8000
       WS_PORT: 8000
-      RESULT_FILE: /results/pogo-sharded-publisher-summary.json
+      RESULT_FILE: ${K6_POGO_SHARDED_PUBLISHER_RESULT_FILE:-/results/pogo-sharded-publisher-summary.json}
       METRICS_URL: http://pogo:2019/metrics
-      METRICS_FILE: /results/pogo-sharded-metrics.prom
+      METRICS_FILE: ${K6_POGO_SHARDED_METRICS_FILE:-/results/pogo-sharded-metrics.prom}
     volumes:
       - ./benchmark.js:/scripts/benchmark.js:ro
       - ./results:/results
@@ -246,15 +249,19 @@ services:
     build:
       context: .
       target: bench-receiver
+      args:
+        POGO_WS_MODULE_REF: ${POGO_WS_MODULE_REF:-3a48a17503f71f5b1cfb2ec9f3c7115b64046736}
     environment:
       <<: *go-receiver-env
       CGO_ENABLED: 0
+      DRIVER: pogo
       HTTP_HOST: pogo
       WS_HOST: pogo
       HTTP_PORT: 8000
       WS_PORT: 8000
       APP_KEY: pogo-app
-      RESULT_FILE: /results/go-receiver-pogo-summary.json
+      WS_ENABLE_COMPRESSION: ${GO_RECEIVER_WS_ENABLE_COMPRESSION:-false}
+      RESULT_FILE: ${GO_RECEIVER_POGO_RESULT_FILE:-/results/go-receiver-pogo-summary.json}
     volumes:
       - ./results:/results
     depends_on:
@@ -265,9 +272,12 @@ services:
     build:
       context: .
       target: bench-receiver
+      args:
+        POGO_WS_MODULE_REF: ${POGO_WS_MODULE_REF:-3a48a17503f71f5b1cfb2ec9f3c7115b64046736}
     environment:
       <<: *go-receiver-env
       CGO_ENABLED: 0
+      DRIVER: pogo
       ROLE: listeners
       VUS: ${SHARD_VUS:-100}
       HTTP_HOST: pogo
@@ -275,7 +285,8 @@ services:
       HTTP_PORT: 8000
       WS_PORT: 8000
       APP_KEY: pogo-app
-      RESULT_FILE: /results/go-receiver-shard-1-summary.json
+      WS_ENABLE_COMPRESSION: ${GO_RECEIVER_WS_ENABLE_COMPRESSION:-false}
+      RESULT_FILE: ${GO_RECEIVER_SHARD_1_RESULT_FILE:-/results/go-receiver-shard-1-summary.json}
     volumes:
       - ./results:/results
     depends_on:
@@ -287,6 +298,7 @@ services:
     environment:
       <<: *go-receiver-env
       CGO_ENABLED: 0
+      DRIVER: pogo
       ROLE: listeners
       VUS: ${SHARD_VUS:-100}
       HTTP_HOST: pogo
@@ -294,13 +306,15 @@ services:
       HTTP_PORT: 8000
       WS_PORT: 8000
       APP_KEY: pogo-app
-      RESULT_FILE: /results/go-receiver-shard-2-summary.json
+      WS_ENABLE_COMPRESSION: ${GO_RECEIVER_WS_ENABLE_COMPRESSION:-false}
+      RESULT_FILE: ${GO_RECEIVER_SHARD_2_RESULT_FILE:-/results/go-receiver-shard-2-summary.json}
 
   go-receiver-pogo-listener-3:
     <<: *go-receiver-pogo-listener
     environment:
       <<: *go-receiver-env
       CGO_ENABLED: 0
+      DRIVER: pogo
       ROLE: listeners
       VUS: ${SHARD_VUS:-100}
       HTTP_HOST: pogo
@@ -308,13 +322,15 @@ services:
       HTTP_PORT: 8000
       WS_PORT: 8000
       APP_KEY: pogo-app
-      RESULT_FILE: /results/go-receiver-shard-3-summary.json
+      WS_ENABLE_COMPRESSION: ${GO_RECEIVER_WS_ENABLE_COMPRESSION:-false}
+      RESULT_FILE: ${GO_RECEIVER_SHARD_3_RESULT_FILE:-/results/go-receiver-shard-3-summary.json}
 
   go-receiver-pogo-listener-4:
     <<: *go-receiver-pogo-listener
     environment:
       <<: *go-receiver-env
       CGO_ENABLED: 0
+      DRIVER: pogo
       ROLE: listeners
       VUS: ${SHARD_VUS:-100}
       HTTP_HOST: pogo
@@ -322,13 +338,15 @@ services:
       HTTP_PORT: 8000
       WS_PORT: 8000
       APP_KEY: pogo-app
-      RESULT_FILE: /results/go-receiver-shard-4-summary.json
+      WS_ENABLE_COMPRESSION: ${GO_RECEIVER_WS_ENABLE_COMPRESSION:-false}
+      RESULT_FILE: ${GO_RECEIVER_SHARD_4_RESULT_FILE:-/results/go-receiver-shard-4-summary.json}
 
   go-receiver-pogo-listener-5:
     <<: *go-receiver-pogo-listener
     environment:
       <<: *go-receiver-env
       CGO_ENABLED: 0
+      DRIVER: pogo
       ROLE: listeners
       VUS: ${SHARD_VUS:-100}
       HTTP_HOST: pogo
@@ -336,28 +354,57 @@ services:
       HTTP_PORT: 8000
       WS_PORT: 8000
       APP_KEY: pogo-app
-      RESULT_FILE: /results/go-receiver-shard-5-summary.json
+      WS_ENABLE_COMPRESSION: ${GO_RECEIVER_WS_ENABLE_COMPRESSION:-false}
+      RESULT_FILE: ${GO_RECEIVER_SHARD_5_RESULT_FILE:-/results/go-receiver-shard-5-summary.json}
 
   go-receiver-pogo-publisher:
     build:
       context: .
       target: bench-receiver
+      args:
+        POGO_WS_MODULE_REF: ${POGO_WS_MODULE_REF:-3a48a17503f71f5b1cfb2ec9f3c7115b64046736}
     environment:
       <<: *go-receiver-env
       CGO_ENABLED: 0
+      DRIVER: pogo
       ROLE: publisher
       HTTP_HOST: pogo
       WS_HOST: pogo
       HTTP_PORT: 8000
       WS_PORT: 8000
       APP_KEY: pogo-app
-      RESULT_FILE: /results/go-receiver-sharded-publisher-summary.json
+      WS_ENABLE_COMPRESSION: ${GO_RECEIVER_WS_ENABLE_COMPRESSION:-false}
+      RESULT_FILE: ${GO_RECEIVER_SHARDED_PUBLISHER_RESULT_FILE:-/results/go-receiver-sharded-publisher-summary.json}
       METRICS_URL: http://pogo:2019/metrics
-      METRICS_FILE: /results/go-receiver-sharded-metrics.prom
+      METRICS_FILE: ${GO_RECEIVER_SHARDED_METRICS_FILE:-/results/go-receiver-sharded-metrics.prom}
     volumes:
       - ./results:/results
     depends_on:
       pogo:
+        condition: service_healthy
+
+  go-receiver-reverb:
+    build:
+      context: .
+      target: bench-receiver
+      args:
+        POGO_WS_MODULE_REF: ${POGO_WS_MODULE_REF:-3a48a17503f71f5b1cfb2ec9f3c7115b64046736}
+    environment:
+      <<: *go-receiver-env
+      CGO_ENABLED: 0
+      DRIVER: reverb
+      HTTP_HOST: reverb-app
+      WS_HOST: reverb-ws
+      HTTP_PORT: 8000
+      WS_PORT: 8080
+      APP_KEY: reverb-key
+      RESULT_FILE: ${GO_RECEIVER_REVERB_RESULT_FILE:-/results/go-receiver-reverb-summary.json}
+    volumes:
+      - ./results:/results
+    depends_on:
+      reverb-app:
+        condition: service_healthy
+      reverb-ws:
         condition: service_healthy
 
   k6-reverb:
@@ -372,7 +419,7 @@ services:
       WS_HOST: reverb-ws
       HTTP_PORT: 8000
       WS_PORT: 8080
-      RESULT_FILE: /results/reverb-summary.json
+      RESULT_FILE: ${K6_REVERB_RESULT_FILE:-/results/reverb-summary.json}
     volumes:
       - ./benchmark.js:/scripts/benchmark.js:ro
       - ./results:/results

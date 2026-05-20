@@ -24,6 +24,7 @@ import (
 const benchChannel = "bench-channel"
 
 type config struct {
+	Driver              string  `json:"driver"`
 	Role                string  `json:"role"`
 	VUs                 int     `json:"vus"`
 	MsgCount            int     `json:"msgCount"`
@@ -43,6 +44,8 @@ type config struct {
 	MetricsURL          string  `json:"metricsUrl"`
 	MetricsFile         string  `json:"metricsFile"`
 	SubscriptionTimeout int     `json:"subscriptionTimeoutSeconds"`
+	ClientCompression   bool    `json:"clientCompression"`
+	AggregateFiles      string  `json:"aggregateFiles,omitempty"`
 }
 
 type summary struct {
@@ -52,6 +55,7 @@ type summary struct {
 	Config      config         `json:"config"`
 	Delivery    delivery       `json:"delivery"`
 	Latency     latencySummary `json:"latency"`
+	WebSocket   websocketStats `json:"websocket"`
 	Diagnostics *diagnostics   `json:"diagnostics"`
 	Errors      errorSummary   `json:"errors"`
 }
@@ -67,22 +71,33 @@ type delivery struct {
 }
 
 type latencySummary struct {
-	SentToReadP50Ms float64 `json:"sentToReadP50Ms"`
-	SentToReadP90Ms float64 `json:"sentToReadP90Ms"`
-	SentToReadP95Ms float64 `json:"sentToReadP95Ms"`
-	SentToReadP99Ms float64 `json:"sentToReadP99Ms"`
+	Samples         int             `json:"samples"`
+	SentToReadMinMs float64         `json:"sentToReadMinMs"`
+	SentToReadAvgMs float64         `json:"sentToReadAvgMs"`
+	SentToReadP50Ms float64         `json:"sentToReadP50Ms"`
+	SentToReadP90Ms float64         `json:"sentToReadP90Ms"`
+	SentToReadP95Ms float64         `json:"sentToReadP95Ms"`
+	SentToReadP99Ms float64         `json:"sentToReadP99Ms"`
+	SentToReadMaxMs float64         `json:"sentToReadMaxMs"`
+	PublishP95Ms    float64         `json:"publishP95Ms"`
+	PublishP99Ms    float64         `json:"publishP99Ms"`
+	Histogram       []latencyBucket `json:"histogram,omitempty"`
 }
 
 type diagnostics struct {
-	FanoutDurationP95Ms       float64 `json:"fanoutDurationP95Ms"`
-	FanoutSubscribersP95      float64 `json:"fanoutSubscribersP95"`
-	ClientQueueDepthP95       float64 `json:"clientQueueDepthP95"`
-	ClientQueueDepthP99       float64 `json:"clientQueueDepthP99"`
-	ClientQueueResidenceP95Ms float64 `json:"clientQueueResidenceP95Ms"`
-	ClientQueueResidenceP99Ms float64 `json:"clientQueueResidenceP99Ms"`
-	OutboundQueueSize         float64 `json:"outboundQueueSize"`
-	WriteBurstSize            float64 `json:"writeBurstSize"`
-	EnableCompression         float64 `json:"enableCompression"`
+	FanoutDurationP95Ms        float64 `json:"fanoutDurationP95Ms"`
+	FanoutSubscribersP95       float64 `json:"fanoutSubscribersP95"`
+	ClientQueueDepthP95        float64 `json:"clientQueueDepthP95"`
+	ClientQueueDepthP99        float64 `json:"clientQueueDepthP99"`
+	ClientQueueResidenceP95Ms  float64 `json:"clientQueueResidenceP95Ms"`
+	ClientQueueResidenceP99Ms  float64 `json:"clientQueueResidenceP99Ms"`
+	OutboundQueueSize          float64 `json:"outboundQueueSize"`
+	WriteBurstSize             float64 `json:"writeBurstSize"`
+	EnableCompression          float64 `json:"enableCompression"`
+	ClientDroppedMessagesTotal float64 `json:"clientDroppedMessagesTotal"`
+	BrokerDroppedMessagesTotal float64 `json:"brokerDroppedMessagesTotal"`
+	WriteFailuresTotal         float64 `json:"writeFailuresTotal"`
+	DataWriteFailuresTotal     float64 `json:"dataWriteFailuresTotal"`
 }
 
 type errorSummary struct {
@@ -96,6 +111,15 @@ type errorSummary struct {
 
 type receiver struct {
 	conn *websocket.Conn
+}
+
+type websocketStats struct {
+	NegotiatedCompressionConnections int `json:"negotiatedCompressionConnections"`
+}
+
+type latencyBucket struct {
+	UpperBoundMs int   `json:"upperBoundMs"`
+	Count        int64 `json:"count"`
 }
 
 type pusherMessage struct {
@@ -118,17 +142,23 @@ func run(ctx context.Context, cfg config) error {
 		return err
 	}
 
+	if cfg.Role == "aggregate" {
+		return runAggregate(cfg)
+	}
+
 	if cfg.Role == "publisher" {
 		return runPublisherOnly(cfg)
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	startedAt := time.Now()
 
 	latencies := make(chan float64, cfg.VUs*cfg.MsgCount*max(1, cfg.PublishBatches))
 	subscribed := make(chan struct{}, cfg.VUs)
 	errs := &errorSummary{}
 	receivers := make([]receiver, 0, cfg.VUs)
+	wsStats := websocketStats{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	connectDeadline := time.Now().Add(time.Duration(max(cfg.RampUpSeconds, cfg.SubscriptionTimeout)) * time.Second)
@@ -138,11 +168,14 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	for i := 0; i < cfg.VUs; i++ {
-		conn, err := dialReceiver(cfg, connectDeadline, errs)
+		conn, extensions, err := dialReceiver(cfg, connectDeadline, errs)
 		if err != nil {
 			atomic.AddInt64(&errs.ConnectErrors, 1)
 			errs.LastConnectError = fmt.Sprintf("connect receiver %d: %v", i, err)
 			break
+		}
+		if strings.Contains(extensions, "permessage-deflate") {
+			wsStats.NegotiatedCompressionConnections++
 		}
 		mu.Lock()
 		receivers = append(receivers, receiver{conn: conn})
@@ -173,12 +206,14 @@ func run(ctx context.Context, cfg config) error {
 		cancel()
 		closeReceivers(receivers)
 		wg.Wait()
-		return writeSummary(cfg, subscribedCount, 0, nil, *errs, nil)
+		return writeSummary(cfg, subscribedCount, 0, nil, nil, *errs, nil, wsStats)
 	}
 
 	completedBatches := 0
+	var publishDurations []float64
 	if cfg.Role == "both" {
-		completedBatches = publishBatches(cfg, errs)
+		sleepUntil(startedAt.Add(time.Duration(cfg.PublishStartSeconds) * time.Second))
+		completedBatches, publishDurations = publishBatches(cfg, errs)
 	} else {
 		completedBatches = cfg.PublishBatches
 	}
@@ -198,7 +233,7 @@ func run(ctx context.Context, cfg config) error {
 			errs.LastConnectError = err.Error()
 		}
 	}
-	return writeSummary(cfg, subscribedCount, completedBatches, values, *errs, diag)
+	return writeSummary(cfg, subscribedCount, completedBatches, values, publishDurations, *errs, diag, wsStats)
 }
 
 func runPublisherOnly(cfg config) error {
@@ -206,36 +241,165 @@ func runPublisherOnly(cfg config) error {
 	if cfg.PublishStartSeconds > 0 {
 		time.Sleep(time.Duration(cfg.PublishStartSeconds) * time.Second)
 	}
-	completedBatches := publishBatches(cfg, errs)
+	completedBatches, publishDurations := publishBatches(cfg, errs)
 	diag, err := scrapeDiagnostics(cfg)
 	if err != nil {
 		errs.LastConnectError = err.Error()
 	}
-	return writeSummary(cfg, 0, completedBatches, nil, *errs, diag)
+	return writeSummary(cfg, 0, completedBatches, nil, publishDurations, *errs, diag, websocketStats{})
 }
 
-func publishBatches(cfg config, errs *errorSummary) int {
+func runAggregate(cfg config) error {
+	files := splitList(cfg.AggregateFiles)
+	if len(files) == 0 {
+		return errors.New("AGGREGATE_FILES must list at least one summary file")
+	}
+
+	inputs := make([]summary, 0, len(files))
+	for _, file := range files {
+		encoded, err := os.ReadFile(file)
+		if err != nil {
+			return fmt.Errorf("read aggregate summary %s: %w", file, err)
+		}
+		var decoded summary
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			return fmt.Errorf("decode aggregate summary %s: %w", file, err)
+		}
+		inputs = append(inputs, decoded)
+	}
+
+	aggregateCfg := cfg
+	aggregateCfg.Driver = firstNonEmpty(cfg.Driver, inputs[0].Driver)
+	aggregateCfg.Role = "aggregate"
+	aggregateCfg.VUs = 0
+	aggregateCfg.MsgCount = inputs[0].Config.MsgCount
+	aggregateCfg.PayloadSize = inputs[0].Config.PayloadSize
+	aggregateCfg.PublishBatches = inputs[0].Config.PublishBatches
+	aggregateCfg.BatchIntervalSecs = inputs[0].Config.BatchIntervalSecs
+	aggregateCfg.RampUpSeconds = inputs[0].Config.RampUpSeconds
+	aggregateCfg.PublishStartSeconds = inputs[0].Config.PublishStartSeconds
+	aggregateCfg.PublishMaxDuration = inputs[0].Config.PublishMaxDuration
+	aggregateCfg.DrainSeconds = inputs[0].Config.DrainSeconds
+	aggregateCfg.ClientCompression = inputs[0].Config.ClientCompression
+
+	mergedBuckets := mergeHistograms(inputs)
+	out := summary{
+		Driver:      aggregateCfg.Driver,
+		Probe:       "go-receiver-aggregate",
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Config:      aggregateCfg,
+		Latency: latencySummary{
+			Histogram:       mergedBuckets,
+			SentToReadP50Ms: percentileFromHistogram(mergedBuckets, 0.50),
+			SentToReadP90Ms: percentileFromHistogram(mergedBuckets, 0.90),
+			SentToReadP95Ms: percentileFromHistogram(mergedBuckets, 0.95),
+			SentToReadP99Ms: percentileFromHistogram(mergedBuckets, 0.99),
+		},
+	}
+
+	allListenersSubscribed := true
+	minSet := false
+	weightedAvgSum := 0.0
+	for _, in := range inputs {
+		aggregateCfg.VUs += in.Config.VUs
+		out.Delivery.Subscribed += in.Delivery.Subscribed
+		out.Delivery.ExpectedMessages += in.Delivery.ExpectedMessages
+		out.Delivery.ObservedMessages += in.Delivery.ObservedMessages
+		out.Delivery.MissingMessages += in.Delivery.MissingMessages
+		out.WebSocket.NegotiatedCompressionConnections += in.WebSocket.NegotiatedCompressionConnections
+		out.Errors.ConnectErrors += in.Errors.ConnectErrors
+		out.Errors.ConnectRetryFailures += in.Errors.ConnectRetryFailures
+		out.Errors.ReadErrors += in.Errors.ReadErrors
+		out.Errors.ParseErrors += in.Errors.ParseErrors
+		out.Errors.PublishErrors += in.Errors.PublishErrors
+		if in.Errors.LastConnectError != "" {
+			out.Errors.LastConnectError = in.Errors.LastConnectError
+		}
+		if !in.Delivery.AllListenersSubscribed {
+			allListenersSubscribed = false
+		}
+		if in.Delivery.CompletedBatches > out.Delivery.CompletedBatches {
+			out.Delivery.CompletedBatches = in.Delivery.CompletedBatches
+		}
+		if in.Latency.Samples > 0 {
+			if !minSet || in.Latency.SentToReadMinMs < out.Latency.SentToReadMinMs {
+				out.Latency.SentToReadMinMs = in.Latency.SentToReadMinMs
+				minSet = true
+			}
+			if in.Latency.SentToReadMaxMs > out.Latency.SentToReadMaxMs {
+				out.Latency.SentToReadMaxMs = in.Latency.SentToReadMaxMs
+			}
+			out.Latency.Samples += in.Latency.Samples
+			weightedAvgSum += in.Latency.SentToReadAvgMs * float64(in.Latency.Samples)
+		}
+	}
+	out.Config = aggregateCfg
+	out.Delivery.AllListenersSubscribed = allListenersSubscribed
+	if out.Delivery.ExpectedMessages > 0 {
+		out.Delivery.DeliveryCompleteness = float64(out.Delivery.ObservedMessages) / float64(out.Delivery.ExpectedMessages)
+	}
+	if out.Latency.Samples > 0 {
+		out.Latency.SentToReadAvgMs = weightedAvgSum / float64(out.Latency.Samples)
+	}
+
+	encoded, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(cfg.ResultFile, append(encoded, '\n'), 0o644); err != nil {
+		return err
+	}
+
+	fmt.Println()
+	fmt.Println("GO RECEIVER AGGREGATE SUMMARY")
+	fmt.Printf("subscribers=%d\n", out.Delivery.Subscribed)
+	fmt.Printf("completed_publish_batches=%d\n", out.Delivery.CompletedBatches)
+	fmt.Printf("expected_messages=%d\n", out.Delivery.ExpectedMessages)
+	fmt.Printf("observed_messages=%d\n", out.Delivery.ObservedMessages)
+	fmt.Printf("missing_messages=%d\n", out.Delivery.MissingMessages)
+	fmt.Printf("delivery_completeness=%g\n", out.Delivery.DeliveryCompleteness)
+	fmt.Printf("sent_to_read_p95_ms=%g\n", out.Latency.SentToReadP95Ms)
+	fmt.Printf("connect_errors=%d\n", out.Errors.ConnectErrors)
+	fmt.Printf("connect_retry_failures=%d\n", out.Errors.ConnectRetryFailures)
+	fmt.Printf("parse_errors=%d\n", out.Errors.ParseErrors)
+	fmt.Printf("read_errors=%d\n", out.Errors.ReadErrors)
+	fmt.Printf("summary_file=%s\n", cfg.ResultFile)
+	fmt.Println()
+	return nil
+}
+
+func publishBatches(cfg config, errs *errorSummary) (int, []float64) {
 	completedBatches := 0
+	durations := make([]float64, 0, cfg.PublishBatches)
 	for i := 0; i < cfg.PublishBatches; i++ {
+		startedAt := time.Now()
 		if err := publishBatch(cfg); err != nil {
 			atomic.AddInt64(&errs.PublishErrors, 1)
 			errs.LastConnectError = err.Error()
 			break
 		}
+		durations = append(durations, float64(time.Since(startedAt))/float64(time.Millisecond))
 		completedBatches++
 		time.Sleep(durationFromSeconds(cfg.BatchIntervalSecs))
 	}
-	return completedBatches
+	return completedBatches, durations
 }
 
-func dialReceiver(cfg config, deadline time.Time, errs *errorSummary) (*websocket.Conn, error) {
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+func dialReceiver(cfg config, deadline time.Time, errs *errorSummary) (*websocket.Conn, string, error) {
+	dialer := websocket.Dialer{
+		HandshakeTimeout:  10 * time.Second,
+		EnableCompression: cfg.ClientCompression,
+	}
 	var lastErr error
 
 	for {
 		conn, res, err := dialer.Dial(wsURL(cfg), nil)
 		if err == nil {
-			return conn, nil
+			extensions := ""
+			if res != nil {
+				extensions = res.Header.Get("Sec-WebSocket-Extensions")
+			}
+			return conn, extensions, nil
 		}
 
 		lastErr = decorateDialError(err, res)
@@ -243,7 +407,7 @@ func dialReceiver(cfg config, deadline time.Time, errs *errorSummary) (*websocke
 		errs.LastConnectError = lastErr.Error()
 
 		if time.Now().Add(250 * time.Millisecond).After(deadline) {
-			return nil, lastErr
+			return nil, "", lastErr
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
@@ -356,6 +520,118 @@ func percentile(sorted []float64, q float64) float64 {
 	return sorted[lower]*(1-weight) + sorted[upper]*weight
 }
 
+func latencyStats(values []float64, publishDurations []float64) latencySummary {
+	sort.Float64s(values)
+	out := latencySummary{
+		Samples:         len(values),
+		SentToReadP50Ms: percentile(values, 0.50),
+		SentToReadP90Ms: percentile(values, 0.90),
+		SentToReadP95Ms: percentile(values, 0.95),
+		SentToReadP99Ms: percentile(values, 0.99),
+		PublishP95Ms:    percentile(sortedCopy(publishDurations), 0.95),
+		PublishP99Ms:    percentile(sortedCopy(publishDurations), 0.99),
+		Histogram:       latencyHistogram(values),
+	}
+	if len(values) == 0 {
+		return out
+	}
+
+	out.SentToReadMinMs = values[0]
+	out.SentToReadMaxMs = values[len(values)-1]
+	sum := 0.0
+	for _, value := range values {
+		sum += value
+	}
+	out.SentToReadAvgMs = sum / float64(len(values))
+	return out
+}
+
+func sortedCopy(values []float64) []float64 {
+	if len(values) == 0 {
+		return nil
+	}
+	copied := append([]float64(nil), values...)
+	sort.Float64s(copied)
+	return copied
+}
+
+func latencyHistogram(values []float64) []latencyBucket {
+	if len(values) == 0 {
+		return nil
+	}
+
+	counts := make(map[int]int64)
+	for _, value := range values {
+		if value < 0 {
+			value = 0
+		}
+		upperBound := int(math.Ceil(value))
+		counts[upperBound]++
+	}
+
+	bounds := make([]int, 0, len(counts))
+	for bound := range counts {
+		bounds = append(bounds, bound)
+	}
+	sort.Ints(bounds)
+
+	buckets := make([]latencyBucket, 0, len(bounds))
+	for _, bound := range bounds {
+		buckets = append(buckets, latencyBucket{
+			UpperBoundMs: bound,
+			Count:        counts[bound],
+		})
+	}
+	return buckets
+}
+
+func percentileFromHistogram(buckets []latencyBucket, q float64) float64 {
+	total := int64(0)
+	for _, bucket := range buckets {
+		total += bucket.Count
+	}
+	if total == 0 {
+		return 0
+	}
+
+	target := int64(math.Ceil(q * float64(total)))
+	if target < 1 {
+		target = 1
+	}
+	seen := int64(0)
+	for _, bucket := range buckets {
+		seen += bucket.Count
+		if seen >= target {
+			return float64(bucket.UpperBoundMs)
+		}
+	}
+	return float64(buckets[len(buckets)-1].UpperBoundMs)
+}
+
+func mergeHistograms(summaries []summary) []latencyBucket {
+	counts := make(map[int]int64)
+	for _, in := range summaries {
+		for _, bucket := range in.Latency.Histogram {
+			counts[bucket.UpperBoundMs] += bucket.Count
+		}
+	}
+
+	bounds := make([]int, 0, len(counts))
+	for bound := range counts {
+		bounds = append(bounds, bound)
+	}
+	sort.Ints(bounds)
+
+	out := make([]latencyBucket, 0, len(bounds))
+	for _, bound := range bounds {
+		out = append(out, latencyBucket{
+			UpperBoundMs: bound,
+			Count:        counts[bound],
+		})
+	}
+	return out
+}
+
 func collectLatencies(latencies <-chan float64, expected int, timeout time.Duration) []float64 {
 	values := make([]float64, 0, expected)
 	timer := time.NewTimer(timeout)
@@ -457,17 +733,81 @@ func scrapeDiagnostics(cfg config) (*diagnostics, error) {
 	clientQueueDepthP99, _ := prometheusHistogramQuantile(text, "pogo_websocket_client_queue_depth", 0.99)
 	clientQueueResidenceP95, _ := prometheusHistogramQuantile(text, "pogo_websocket_client_queue_residence_seconds", 0.95)
 	clientQueueResidenceP99, _ := prometheusHistogramQuantile(text, "pogo_websocket_client_queue_residence_seconds", 0.99)
+	writeFailuresPrepared := prometheusCounterValue(text, "pogo_websocket_write_failures_total", map[string]string{"kind": "prepared"})
+	writeFailuresBytes := prometheusCounterValue(text, "pogo_websocket_write_failures_total", map[string]string{"kind": "bytes"})
 	return &diagnostics{
-		FanoutDurationP95Ms:       fanoutDurationP95 * 1000,
-		FanoutSubscribersP95:      fanoutSubscribersP95,
-		ClientQueueDepthP95:       clientQueueDepthP95,
-		ClientQueueDepthP99:       clientQueueDepthP99,
-		ClientQueueResidenceP95Ms: clientQueueResidenceP95 * 1000,
-		ClientQueueResidenceP99Ms: clientQueueResidenceP99 * 1000,
-		OutboundQueueSize:         prometheusGaugeValue(text, "pogo_websocket_delivery_config", "outbound_queue_size"),
-		WriteBurstSize:            prometheusGaugeValue(text, "pogo_websocket_delivery_config", "write_burst_size"),
-		EnableCompression:         prometheusGaugeValue(text, "pogo_websocket_delivery_config", "enable_compression"),
+		FanoutDurationP95Ms:        fanoutDurationP95 * 1000,
+		FanoutSubscribersP95:       fanoutSubscribersP95,
+		ClientQueueDepthP95:        clientQueueDepthP95,
+		ClientQueueDepthP99:        clientQueueDepthP99,
+		ClientQueueResidenceP95Ms:  clientQueueResidenceP95 * 1000,
+		ClientQueueResidenceP99Ms:  clientQueueResidenceP99 * 1000,
+		OutboundQueueSize:          prometheusGaugeValue(text, "pogo_websocket_delivery_config", "outbound_queue_size"),
+		WriteBurstSize:             prometheusGaugeValue(text, "pogo_websocket_delivery_config", "write_burst_size"),
+		EnableCompression:          prometheusGaugeValue(text, "pogo_websocket_delivery_config", "enable_compression"),
+		ClientDroppedMessagesTotal: prometheusCounterValue(text, "pogo_websocket_client_dropped_messages_total", nil),
+		BrokerDroppedMessagesTotal: prometheusCounterValue(text, "pogo_websocket_broker_dropped_messages_total", nil),
+		WriteFailuresTotal:         prometheusCounterValue(text, "pogo_websocket_write_failures_total", nil),
+		DataWriteFailuresTotal:     writeFailuresPrepared + writeFailuresBytes,
 	}, nil
+}
+
+func prometheusCounterValue(text string, name string, labels map[string]string) float64 {
+	total := 0.0
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		metricName, metricLabels := prometheusNameAndLabels(fields[0])
+		if metricName != name || !labelsMatch(metricLabels, labels) {
+			continue
+		}
+
+		value, err := strconv.ParseFloat(fields[1], 64)
+		if err != nil || !isFinite(value) {
+			continue
+		}
+		total += value
+	}
+	return total
+}
+
+func prometheusNameAndLabels(metric string) (string, map[string]string) {
+	start := strings.Index(metric, "{")
+	if start < 0 {
+		return metric, nil
+	}
+	end := strings.LastIndex(metric, "}")
+	if end < start {
+		return metric, nil
+	}
+	return metric[:start], parsePrometheusLabels(metric[start+1 : end])
+}
+
+func parsePrometheusLabels(raw string) map[string]string {
+	labels := make(map[string]string)
+	for _, part := range strings.Split(raw, ",") {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		labels[key] = strings.Trim(value, `"`)
+	}
+	return labels
+}
+
+func labelsMatch(sample map[string]string, wanted map[string]string) bool {
+	for key, value := range wanted {
+		if sample[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func prometheusGaugeValue(text, name, key string) float64 {
@@ -569,8 +909,8 @@ func prometheusLE(metric string) (float64, bool) {
 	return value, true
 }
 
-func writeSummary(cfg config, subscribedCount int, completedBatches int, values []float64, errs errorSummary, diag *diagnostics) error {
-	sort.Float64s(values)
+func writeSummary(cfg config, subscribedCount int, completedBatches int, values []float64, publishDurations []float64, errs errorSummary, diag *diagnostics, wsStats websocketStats) error {
+	latency := latencyStats(values, publishDurations)
 	expected := subscribedCount * cfg.MsgCount * completedBatches
 	missing := max(0, expected-len(values))
 	completeness := 0.0
@@ -579,7 +919,7 @@ func writeSummary(cfg config, subscribedCount int, completedBatches int, values 
 	}
 
 	out := summary{
-		Driver:      "pogo",
+		Driver:      cfg.Driver,
 		Probe:       "go-receiver",
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Config:      cfg,
@@ -592,12 +932,8 @@ func writeSummary(cfg config, subscribedCount int, completedBatches int, values 
 			DeliveryCompleteness:   completeness,
 			AllListenersSubscribed: subscribedCount == cfg.VUs,
 		},
-		Latency: latencySummary{
-			SentToReadP50Ms: percentile(values, 0.50),
-			SentToReadP90Ms: percentile(values, 0.90),
-			SentToReadP95Ms: percentile(values, 0.95),
-			SentToReadP99Ms: percentile(values, 0.99),
-		},
+		Latency:     latency,
+		WebSocket:   wsStats,
 		Diagnostics: diag,
 		Errors:      errs,
 	}
@@ -648,6 +984,7 @@ func durationFromSeconds(seconds float64) time.Duration {
 
 func loadConfig() config {
 	return config{
+		Driver:              envString("DRIVER", "pogo"),
 		Role:                envString("ROLE", "both"),
 		VUs:                 envInt("VUS", 500),
 		MsgCount:            envInt("MSG_COUNT", 100),
@@ -667,14 +1004,16 @@ func loadConfig() config {
 		MetricsURL:          envString("METRICS_URL", ""),
 		MetricsFile:         envString("METRICS_FILE", ""),
 		SubscriptionTimeout: envInt("SUBSCRIPTION_TIMEOUT_SECONDS", 30),
+		ClientCompression:   envBool("WS_ENABLE_COMPRESSION", false),
+		AggregateFiles:      envString("AGGREGATE_FILES", ""),
 	}
 }
 
 func validateConfig(cfg config) error {
-	if cfg.Role != "both" && cfg.Role != "listeners" && cfg.Role != "publisher" {
-		return errors.New("ROLE must be both, listeners, or publisher")
+	if cfg.Role != "both" && cfg.Role != "listeners" && cfg.Role != "publisher" && cfg.Role != "aggregate" {
+		return errors.New("ROLE must be both, listeners, publisher, or aggregate")
 	}
-	if cfg.Role != "publisher" && cfg.VUs <= 0 {
+	if cfg.Role != "publisher" && cfg.Role != "aggregate" && cfg.VUs <= 0 {
 		return errors.New("VUS must be greater than 0")
 	}
 	if cfg.MsgCount < 0 {
@@ -718,6 +1057,40 @@ func envFloat(key string, fallback float64) float64 {
 		return fallback
 	}
 	return parsed
+}
+
+func envBool(key string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if value == "" {
+		return fallback
+	}
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func sleepUntil(deadline time.Time) {
+	if remaining := time.Until(deadline); remaining > 0 {
+		time.Sleep(remaining)
+	}
 }
 
 func isFinite(value float64) bool {

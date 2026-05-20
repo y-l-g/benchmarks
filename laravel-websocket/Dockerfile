@@ -2,6 +2,8 @@ FROM dunglas/frankenphp:1.12.3-builder-php8.5-trixie AS builder
 
 COPY --from=caddy:builder /usr/bin/xcaddy /usr/bin/xcaddy
 
+ARG POGO_WS_MODULE_REF=3a48a17503f71f5b1cfb2ec9f3c7115b64046736
+
 RUN CGO_ENABLED=1 \
     XCADDY_SETCAP=1 \
     XCADDY_GO_BUILD_FLAGS="-ldflags='-w -s' -tags=nobadger,nomysql,nopgx" \
@@ -12,7 +14,7 @@ RUN CGO_ENABLED=1 \
     --with github.com/dunglas/frankenphp@v1.12.3 \
     --with github.com/dunglas/frankenphp/caddy@v1.12.3 \
     --with github.com/dunglas/caddy-cbrotli@v1.0.1 \
-    --with github.com/y-l-g/websocket/module@main
+    --with github.com/y-l-g/websocket/module@${POGO_WS_MODULE_REF}
 
 FROM golang:1.26.3-bookworm AS bench-receiver-builder
 

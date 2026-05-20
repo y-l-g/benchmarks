@@ -67,6 +67,34 @@ func TestPercentileEmpty(t *testing.T) {
 	}
 }
 
+func TestLatencyHistogramQuantile(t *testing.T) {
+	histogram := latencyHistogram([]float64{0.1, 1.2, 1.8, 7.1})
+
+	if got := percentileFromHistogram(histogram, 0.50); got != 2 {
+		t.Fatalf("histogram p50 = %v, want 2", got)
+	}
+	if got := percentileFromHistogram(histogram, 0.95); got != 8 {
+		t.Fatalf("histogram p95 = %v, want 8", got)
+	}
+}
+
+func TestMergeHistograms(t *testing.T) {
+	merged := mergeHistograms([]summary{
+		{Latency: latencySummary{Histogram: []latencyBucket{{UpperBoundMs: 1, Count: 2}}}},
+		{Latency: latencySummary{Histogram: []latencyBucket{{UpperBoundMs: 1, Count: 3}, {UpperBoundMs: 5, Count: 1}}}},
+	})
+
+	if len(merged) != 2 {
+		t.Fatalf("merged bucket count = %d, want 2", len(merged))
+	}
+	if merged[0].UpperBoundMs != 1 || merged[0].Count != 5 {
+		t.Fatalf("first merged bucket = %#v, want upperBound=1 count=5", merged[0])
+	}
+	if merged[1].UpperBoundMs != 5 || merged[1].Count != 1 {
+		t.Fatalf("second merged bucket = %#v, want upperBound=5 count=1", merged[1])
+	}
+}
+
 func TestDecorateDialErrorIncludesStatusAndBody(t *testing.T) {
 	err := decorateDialError(io.ErrUnexpectedEOF, &http.Response{
 		StatusCode: http.StatusTooManyRequests,
@@ -113,5 +141,20 @@ pogo_websocket_delivery_config{key="enable_compression"} 1
 	}
 	if got := prometheusGaugeValue(text, "pogo_websocket_delivery_config", "enable_compression"); got != 1 {
 		t.Fatalf("enable_compression = %v, want 1", got)
+	}
+}
+
+func TestPrometheusCounterValue(t *testing.T) {
+	text := `
+pogo_websocket_write_failures_total{kind="close"} 500
+pogo_websocket_write_failures_total{kind="prepared"} 2
+pogo_websocket_write_failures_total{kind="bytes"} 3
+`
+
+	if got := prometheusCounterValue(text, "pogo_websocket_write_failures_total", nil); got != 505 {
+		t.Fatalf("all write failures = %v, want 505", got)
+	}
+	if got := prometheusCounterValue(text, "pogo_websocket_write_failures_total", map[string]string{"kind": "prepared"}); got != 2 {
+		t.Fatalf("prepared write failures = %v, want 2", got)
 	}
 }

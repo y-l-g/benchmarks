@@ -24,6 +24,7 @@ const RAMP_UP_SECONDS = parseInt(__ENV.RAMP_UP_SECONDS || "10", 10);
 const RAMP_DOWN_SECONDS = parseInt(__ENV.RAMP_DOWN_SECONDS || "5", 10);
 const PUBLISH_START_SECONDS = parseInt(__ENV.PUBLISH_START_SECONDS || "12", 10);
 const DRAIN_SECONDS = parseInt(__ENV.DRAIN_SECONDS || "10", 10);
+const LATENCY_P95_THRESHOLD_MS = parseFloat(__ENV.LATENCY_P95_THRESHOLD_MS || "0");
 const PUBLISH_WINDOW_SECONDS = Math.ceil(PUBLISH_BATCHES * BATCH_INTERVAL_SECONDS);
 const PUBLISH_MAX_DURATION_SECONDS = parseInt(
   __ENV.PUBLISH_MAX_DURATION_SECONDS ||
@@ -257,6 +258,9 @@ function buildThresholds() {
     thresholds.publish_success = ["rate==1"];
     thresholds.http_reqs = [`count==${PUBLISH_BATCHES}`];
   }
+  if (LATENCY_P95_THRESHOLD_MS > 0 && (ROLE === "both" || ROLE === "listeners")) {
+    thresholds.event_sent_to_received_ms = [`p(95)<${LATENCY_P95_THRESHOLD_MS}`];
+  }
 
   return thresholds;
 }
@@ -374,6 +378,9 @@ export function handleSummary(data) {
   const completedPublishBatches = count("http_reqs");
   const published = Math.round(completedPublishBatches * (data.metrics.publish_success?.values.rate || 0));
   const observed = count("msgs_received");
+  const connectErrors = count("conn_errors");
+  const parseErrorCount = count("parse_errors");
+  const publishErrors = Math.max(0, PUBLISH_BATCHES - published);
   const expectedBatches = ROLE === "listeners" ? PUBLISH_BATCHES : published;
   const expectedPerSuccessfulBatch = subscribed * MSG_COUNT;
   const totalExpectedMessages = expectedPerSuccessfulBatch * expectedBatches;
@@ -437,6 +444,7 @@ export function handleSummary(data) {
       publishWindowSeconds: PUBLISH_WINDOW_SECONDS,
       publishMaxDurationSeconds: PUBLISH_MAX_DURATION_SECONDS,
       drainSeconds: DRAIN_SECONDS,
+      latencyP95ThresholdMs: LATENCY_P95_THRESHOLD_MS,
     },
     validity: {
       scheduleIsValid: SCHEDULE_IS_VALID,
@@ -457,11 +465,21 @@ export function handleSummary(data) {
       missing,
       completeness: totalExpectedMessages === 0 ? 0 : observed / totalExpectedMessages,
     },
+    errors: {
+      connectErrors,
+      connectRetryFailures: 0,
+      parseErrors: parseErrorCount,
+      readErrors: 0,
+      publishErrors,
+    },
     latency: {
+      messageP50Ms: percentile("msg_latency_ms", "med"),
       messageP95Ms: percentile("msg_latency_ms", "p(95)"),
       messageP99Ms: percentile("msg_latency_ms", "p(99)"),
+      eventCreatedToReceivedP50Ms: percentile("event_created_to_received_ms", "med"),
       eventCreatedToReceivedP95Ms: percentile("event_created_to_received_ms", "p(95)"),
       eventCreatedToReceivedP99Ms: percentile("event_created_to_received_ms", "p(99)"),
+      eventSentToReceivedP50Ms: percentile("event_sent_to_received_ms", "med"),
       eventSentToReceivedP95Ms: percentile("event_sent_to_received_ms", "p(95)"),
       eventSentToReceivedP99Ms: percentile("event_sent_to_received_ms", "p(99)"),
       publishP95Ms: percentile("publish_duration_ms", "p(95)"),
@@ -531,6 +549,9 @@ export function handleSummary(data) {
       `observed_messages=${observed}`,
       `missing_messages=${missing}`,
       `delivery_completeness=${summary.delivery.completeness}`,
+      `connect_errors=${connectErrors}`,
+      `parse_errors=${parseErrorCount}`,
+      `publish_errors=${publishErrors}`,
       `schedule_is_valid=${SCHEDULE_IS_VALID}`,
       `msg_latency_p95_ms=${summary.latency.messageP95Ms}`,
       `event_created_to_received_p95_ms=${summary.latency.eventCreatedToReceivedP95Ms}`,
