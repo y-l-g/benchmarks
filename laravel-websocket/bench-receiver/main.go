@@ -31,6 +31,7 @@ type config struct {
 	PayloadSize         int     `json:"payloadSize"`
 	PublishBatches      int     `json:"publishBatches"`
 	BatchIntervalSecs   float64 `json:"batchIntervalSeconds"`
+	PublishIntervalMs   float64 `json:"publishMessageIntervalMs"`
 	RampUpSeconds       int     `json:"rampUpSeconds"`
 	PublishStartSeconds int     `json:"publishStartSeconds"`
 	PublishMaxDuration  int     `json:"publishMaxDurationSeconds"`
@@ -46,6 +47,8 @@ type config struct {
 	SubscriptionTimeout int     `json:"subscriptionTimeoutSeconds"`
 	ClientCompression   bool    `json:"clientCompression"`
 	AggregateFiles      string  `json:"aggregateFiles,omitempty"`
+	ReceiverDiagnostics bool    `json:"receiverDiagnostics"`
+	ReceiverTopN        int     `json:"receiverDiagnosticsTopN"`
 }
 
 type summary struct {
@@ -57,6 +60,7 @@ type summary struct {
 	Latency     latencySummary `json:"latency"`
 	WebSocket   websocketStats `json:"websocket"`
 	Diagnostics *diagnostics   `json:"diagnostics"`
+	Receiver    *receiverProbe `json:"receiver,omitempty"`
 	Errors      errorSummary   `json:"errors"`
 }
 
@@ -128,7 +132,49 @@ type pusherMessage struct {
 }
 
 type benchPayload struct {
+	ID     int     `json:"id"`
 	SentAt float64 `json:"sentAt"`
+}
+
+type latencySample struct {
+	SentToReadMs       float64
+	SentToSocketReadMs float64
+	DecodeMs           float64
+	ReadAtMs           float64
+	ClientID           int
+	MessageID          int
+	ClientSequence     int
+}
+
+type receiverProbe struct {
+	Samples                   int                     `json:"samples"`
+	ReadWindowMs              float64                 `json:"readWindowMs"`
+	ReadThroughputMessagesSec float64                 `json:"readThroughputMessagesPerSecond"`
+	SentToSocketReadP50Ms     float64                 `json:"sentToSocketReadP50Ms"`
+	SentToSocketReadP95Ms     float64                 `json:"sentToSocketReadP95Ms"`
+	SentToSocketReadP99Ms     float64                 `json:"sentToSocketReadP99Ms"`
+	DecodeP50Ms               float64                 `json:"decodeP50Ms"`
+	DecodeP95Ms               float64                 `json:"decodeP95Ms"`
+	DecodeP99Ms               float64                 `json:"decodeP99Ms"`
+	WorstClients              []groupedLatencySummary `json:"worstClients,omitempty"`
+	ByMessageID               []groupedLatencySummary `json:"byMessageId,omitempty"`
+}
+
+type groupedLatencySummary struct {
+	ID                      int     `json:"id"`
+	Samples                 int     `json:"samples"`
+	SentToReadAvgMs         float64 `json:"sentToReadAvgMs"`
+	SentToReadP50Ms         float64 `json:"sentToReadP50Ms"`
+	SentToReadP95Ms         float64 `json:"sentToReadP95Ms"`
+	SentToReadP99Ms         float64 `json:"sentToReadP99Ms"`
+	SentToReadMaxMs         float64 `json:"sentToReadMaxMs"`
+	SentToSocketReadP95Ms   float64 `json:"sentToSocketReadP95Ms"`
+	SentToSocketReadP99Ms   float64 `json:"sentToSocketReadP99Ms"`
+	DecodeP95Ms             float64 `json:"decodeP95Ms"`
+	FirstReadOffsetMs       float64 `json:"firstReadOffsetMs,omitempty"`
+	LastReadOffsetMs        float64 `json:"lastReadOffsetMs,omitempty"`
+	ReadWindowMs            float64 `json:"readWindowMs,omitempty"`
+	ApproxMessagesPerSecond float64 `json:"approxMessagesPerSecond,omitempty"`
 }
 
 func main() {
@@ -154,7 +200,12 @@ func run(ctx context.Context, cfg config) error {
 	defer cancel()
 	startedAt := time.Now()
 
-	latencies := make(chan float64, cfg.VUs*cfg.MsgCount*max(1, cfg.PublishBatches))
+	expectedCapacity := cfg.VUs * cfg.MsgCount * max(1, cfg.PublishBatches)
+	latencies := make(chan float64, expectedCapacity)
+	var samples chan latencySample
+	if cfg.ReceiverDiagnostics {
+		samples = make(chan latencySample, expectedCapacity)
+	}
 	subscribed := make(chan struct{}, cfg.VUs)
 	errs := &errorSummary{}
 	receivers := make([]receiver, 0, cfg.VUs)
@@ -182,10 +233,10 @@ func run(ctx context.Context, cfg config) error {
 		mu.Unlock()
 
 		wg.Add(1)
-		go func(c *websocket.Conn) {
+		go func(clientID int, c *websocket.Conn) {
 			defer wg.Done()
-			readLoop(ctx, c, subscribed, latencies, errs)
-		}(conn)
+			readLoop(ctx, clientID, c, subscribed, latencies, samples, errs)
+		}(i, conn)
 
 		if err := conn.WriteJSON(map[string]any{
 			"event": "pusher:subscribe",
@@ -206,7 +257,7 @@ func run(ctx context.Context, cfg config) error {
 		cancel()
 		closeReceivers(receivers)
 		wg.Wait()
-		return writeSummary(cfg, subscribedCount, 0, nil, nil, *errs, nil, wsStats)
+		return writeSummary(cfg, subscribedCount, 0, nil, nil, *errs, nil, wsStats, nil)
 	}
 
 	completedBatches := 0
@@ -220,6 +271,10 @@ func run(ctx context.Context, cfg config) error {
 
 	expectedMessages := subscribedCount * cfg.MsgCount * completedBatches
 	values := collectLatencies(latencies, expectedMessages, receiveTimeout(cfg))
+	var latencySamples []latencySample
+	if cfg.ReceiverDiagnostics {
+		latencySamples = drainLatencySamples(samples, len(values))
+	}
 
 	cancel()
 	closeReceivers(receivers)
@@ -233,7 +288,7 @@ func run(ctx context.Context, cfg config) error {
 			errs.LastConnectError = err.Error()
 		}
 	}
-	return writeSummary(cfg, subscribedCount, completedBatches, values, publishDurations, *errs, diag, wsStats)
+	return writeSummary(cfg, subscribedCount, completedBatches, values, publishDurations, *errs, diag, wsStats, latencySamples)
 }
 
 func runPublisherOnly(cfg config) error {
@@ -246,7 +301,7 @@ func runPublisherOnly(cfg config) error {
 	if err != nil {
 		errs.LastConnectError = err.Error()
 	}
-	return writeSummary(cfg, 0, completedBatches, nil, publishDurations, *errs, diag, websocketStats{})
+	return writeSummary(cfg, 0, completedBatches, nil, publishDurations, *errs, diag, websocketStats{}, nil)
 }
 
 func runAggregate(cfg config) error {
@@ -429,7 +484,8 @@ func decorateDialError(err error, res *http.Response) error {
 	return fmt.Errorf("%w: status=%d body=%q", err, res.StatusCode, string(body))
 }
 
-func readLoop(ctx context.Context, conn *websocket.Conn, subscribed chan<- struct{}, latencies chan<- float64, errs *errorSummary) {
+func readLoop(ctx context.Context, clientID int, conn *websocket.Conn, subscribed chan<- struct{}, latencies chan<- float64, samples chan<- latencySample, errs *errorSummary) {
+	benchSequence := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -438,6 +494,7 @@ func readLoop(ctx context.Context, conn *websocket.Conn, subscribed chan<- struc
 		}
 
 		_, data, err := conn.ReadMessage()
+		readAt := time.Now()
 		if err != nil {
 			if ctx.Err() == nil {
 				atomic.AddInt64(&errs.ReadErrors, 1)
@@ -461,19 +518,41 @@ func readLoop(ctx context.Context, conn *websocket.Conn, subscribed chan<- struc
 			default:
 			}
 		case "bench.event":
-			sentAt, err := parseBenchSentAt(msg.Data)
+			payload, err := parseBenchPayload(msg.Data)
 			if err != nil {
 				atomic.AddInt64(&errs.ParseErrors, 1)
 				continue
 			}
-			latency := float64(time.Now().UnixNano())/float64(time.Millisecond) - sentAt
+			now := time.Now()
+			latency := unixMillis(now) - payload.SentAt
 			if latency < 0 {
 				latency = 0
 			}
+			socketReadLatency := unixMillis(readAt) - payload.SentAt
+			if socketReadLatency < 0 {
+				socketReadLatency = 0
+			}
+			benchSequence++
 			select {
 			case latencies <- latency:
 			case <-ctx.Done():
 				return
+			}
+			if samples != nil {
+				sample := latencySample{
+					SentToReadMs:       latency,
+					SentToSocketReadMs: socketReadLatency,
+					DecodeMs:           float64(now.Sub(readAt)) / float64(time.Millisecond),
+					ReadAtMs:           unixMillis(readAt),
+					ClientID:           clientID,
+					MessageID:          payload.ID,
+					ClientSequence:     benchSequence,
+				}
+				select {
+				case samples <- sample:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
@@ -491,6 +570,14 @@ func parsePusherMessage(data []byte) (pusherMessage, bool, error) {
 }
 
 func parseBenchSentAt(raw json.RawMessage) (float64, error) {
+	payload, err := parseBenchPayload(raw)
+	if err != nil {
+		return 0, err
+	}
+	return payload.SentAt, nil
+}
+
+func parseBenchPayload(raw json.RawMessage) (benchPayload, error) {
 	var asString string
 	if err := json.Unmarshal(raw, &asString); err == nil {
 		raw = json.RawMessage(asString)
@@ -498,12 +585,12 @@ func parseBenchSentAt(raw json.RawMessage) (float64, error) {
 
 	var payload benchPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return 0, err
+		return benchPayload{}, err
 	}
 	if !isFinite(payload.SentAt) || payload.SentAt <= 0 {
-		return 0, errors.New("missing sentAt")
+		return benchPayload{}, errors.New("missing sentAt")
 	}
-	return payload.SentAt, nil
+	return payload, nil
 }
 
 func percentile(sorted []float64, q float64) float64 {
@@ -652,6 +739,23 @@ func collectLatencies(latencies <-chan float64, expected int, timeout time.Durat
 	return values
 }
 
+func drainLatencySamples(samples <-chan latencySample, expected int) []latencySample {
+	if samples == nil || expected == 0 {
+		return nil
+	}
+
+	values := make([]latencySample, 0, expected)
+	for len(values) < expected {
+		select {
+		case sample := <-samples:
+			values = append(values, sample)
+		default:
+			return values
+		}
+	}
+	return values
+}
+
 func waitForSubscriptions(subscribed <-chan struct{}, expected int, timeout time.Duration) int {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -678,9 +782,13 @@ func publishBatch(cfg config) error {
 	query := u.Query()
 	query.Set("count", strconv.Itoa(cfg.MsgCount))
 	query.Set("size", strconv.Itoa(cfg.PayloadSize))
+	if cfg.PublishIntervalMs > 0 {
+		query.Set("interval_ms", strconv.FormatFloat(cfg.PublishIntervalMs, 'f', -1, 64))
+	}
 	u.RawQuery = query.Encode()
 
-	client := http.Client{Timeout: time.Duration(max(5, int(math.Ceil(cfg.BatchIntervalSecs)))) * time.Second}
+	requestSeconds := int(math.Ceil(float64(cfg.MsgCount)*cfg.PublishIntervalMs/1000)) + 5
+	client := http.Client{Timeout: time.Duration(max(5, requestSeconds)) * time.Second}
 	res, err := client.Get(u.String())
 	if err != nil {
 		return err
@@ -912,7 +1020,135 @@ func prometheusLE(metric string) (float64, bool) {
 	return value, true
 }
 
-func writeSummary(cfg config, subscribedCount int, completedBatches int, values []float64, publishDurations []float64, errs errorSummary, diag *diagnostics, wsStats websocketStats) error {
+func receiverDiagnostics(samples []latencySample, cfg config) *receiverProbe {
+	if len(samples) == 0 {
+		return nil
+	}
+
+	socketReadLatencies := make([]float64, 0, len(samples))
+	decodeDurations := make([]float64, 0, len(samples))
+	byMessageID := make(map[int][]latencySample)
+	byClientID := make(map[int][]latencySample)
+	firstReadAt := samples[0].ReadAtMs
+	lastReadAt := samples[0].ReadAtMs
+
+	for _, sample := range samples {
+		socketReadLatencies = append(socketReadLatencies, sample.SentToSocketReadMs)
+		decodeDurations = append(decodeDurations, sample.DecodeMs)
+		byMessageID[sample.MessageID] = append(byMessageID[sample.MessageID], sample)
+		byClientID[sample.ClientID] = append(byClientID[sample.ClientID], sample)
+		if sample.ReadAtMs < firstReadAt {
+			firstReadAt = sample.ReadAtMs
+		}
+		if sample.ReadAtMs > lastReadAt {
+			lastReadAt = sample.ReadAtMs
+		}
+	}
+
+	sort.Float64s(socketReadLatencies)
+	sort.Float64s(decodeDurations)
+	readWindowMs := lastReadAt - firstReadAt
+	throughput := 0.0
+	if readWindowMs > 0 {
+		throughput = float64(len(samples)) / (readWindowMs / 1000)
+	}
+
+	out := &receiverProbe{
+		Samples:                   len(samples),
+		ReadWindowMs:              readWindowMs,
+		ReadThroughputMessagesSec: throughput,
+		SentToSocketReadP50Ms:     percentile(socketReadLatencies, 0.50),
+		SentToSocketReadP95Ms:     percentile(socketReadLatencies, 0.95),
+		SentToSocketReadP99Ms:     percentile(socketReadLatencies, 0.99),
+		DecodeP50Ms:               percentile(decodeDurations, 0.50),
+		DecodeP95Ms:               percentile(decodeDurations, 0.95),
+		DecodeP99Ms:               percentile(decodeDurations, 0.99),
+	}
+
+	clientSummaries := groupedLatencySummaries(byClientID, firstReadAt)
+	sort.Slice(clientSummaries, func(i, j int) bool {
+		if clientSummaries[i].SentToReadP95Ms == clientSummaries[j].SentToReadP95Ms {
+			return clientSummaries[i].SentToReadMaxMs > clientSummaries[j].SentToReadMaxMs
+		}
+		return clientSummaries[i].SentToReadP95Ms > clientSummaries[j].SentToReadP95Ms
+	})
+	topN := cfg.ReceiverTopN
+	if topN <= 0 {
+		topN = 10
+	}
+	if len(clientSummaries) > topN {
+		clientSummaries = clientSummaries[:topN]
+	}
+	out.WorstClients = clientSummaries
+
+	if len(byMessageID) <= 1000 {
+		messageSummaries := groupedLatencySummaries(byMessageID, firstReadAt)
+		sort.Slice(messageSummaries, func(i, j int) bool {
+			return messageSummaries[i].ID < messageSummaries[j].ID
+		})
+		out.ByMessageID = messageSummaries
+	}
+
+	return out
+}
+
+func groupedLatencySummaries(groups map[int][]latencySample, firstReadAt float64) []groupedLatencySummary {
+	summaries := make([]groupedLatencySummary, 0, len(groups))
+	for id, samples := range groups {
+		summaries = append(summaries, groupedLatencySummaryFor(id, samples, firstReadAt))
+	}
+	return summaries
+}
+
+func groupedLatencySummaryFor(id int, samples []latencySample, firstReadAt float64) groupedLatencySummary {
+	sentToRead := make([]float64, 0, len(samples))
+	sentToSocketRead := make([]float64, 0, len(samples))
+	decodeDurations := make([]float64, 0, len(samples))
+	firstRead := samples[0].ReadAtMs
+	lastRead := samples[0].ReadAtMs
+	sum := 0.0
+
+	for _, sample := range samples {
+		sentToRead = append(sentToRead, sample.SentToReadMs)
+		sentToSocketRead = append(sentToSocketRead, sample.SentToSocketReadMs)
+		decodeDurations = append(decodeDurations, sample.DecodeMs)
+		sum += sample.SentToReadMs
+		if sample.ReadAtMs < firstRead {
+			firstRead = sample.ReadAtMs
+		}
+		if sample.ReadAtMs > lastRead {
+			lastRead = sample.ReadAtMs
+		}
+	}
+
+	sort.Float64s(sentToRead)
+	sort.Float64s(sentToSocketRead)
+	sort.Float64s(decodeDurations)
+	readWindowMs := lastRead - firstRead
+	throughput := 0.0
+	if readWindowMs > 0 {
+		throughput = float64(len(samples)) / (readWindowMs / 1000)
+	}
+
+	return groupedLatencySummary{
+		ID:                      id,
+		Samples:                 len(samples),
+		SentToReadAvgMs:         sum / float64(len(samples)),
+		SentToReadP50Ms:         percentile(sentToRead, 0.50),
+		SentToReadP95Ms:         percentile(sentToRead, 0.95),
+		SentToReadP99Ms:         percentile(sentToRead, 0.99),
+		SentToReadMaxMs:         sentToRead[len(sentToRead)-1],
+		SentToSocketReadP95Ms:   percentile(sentToSocketRead, 0.95),
+		SentToSocketReadP99Ms:   percentile(sentToSocketRead, 0.99),
+		DecodeP95Ms:             percentile(decodeDurations, 0.95),
+		FirstReadOffsetMs:       firstRead - firstReadAt,
+		LastReadOffsetMs:        lastRead - firstReadAt,
+		ReadWindowMs:            readWindowMs,
+		ApproxMessagesPerSecond: throughput,
+	}
+}
+
+func writeSummary(cfg config, subscribedCount int, completedBatches int, values []float64, publishDurations []float64, errs errorSummary, diag *diagnostics, wsStats websocketStats, samples []latencySample) error {
 	latency := latencyStats(values, publishDurations)
 	expected := subscribedCount * cfg.MsgCount * completedBatches
 	missing := max(0, expected-len(values))
@@ -938,6 +1174,7 @@ func writeSummary(cfg config, subscribedCount int, completedBatches int, values 
 		Latency:     latency,
 		WebSocket:   wsStats,
 		Diagnostics: diag,
+		Receiver:    receiverDiagnostics(samples, cfg),
 		Errors:      errs,
 	}
 
@@ -994,6 +1231,7 @@ func loadConfig() config {
 		PayloadSize:         envInt("PAYLOAD_SIZE", 1024),
 		PublishBatches:      envInt("PUBLISH_BATCHES", 20),
 		BatchIntervalSecs:   envFloat("BATCH_INTERVAL_SECONDS", 2),
+		PublishIntervalMs:   envFloat("PUBLISH_MESSAGE_INTERVAL_MS", 0),
 		RampUpSeconds:       envInt("RAMP_UP_SECONDS", 10),
 		PublishStartSeconds: envInt("PUBLISH_START_SECONDS", 12),
 		PublishMaxDuration:  envInt("PUBLISH_MAX_DURATION_SECONDS", envInt("PUBLISH_BATCHES", 20)*int(math.Ceil(envFloat("BATCH_INTERVAL_SECONDS", 2)))+60),
@@ -1009,6 +1247,8 @@ func loadConfig() config {
 		SubscriptionTimeout: envInt("SUBSCRIPTION_TIMEOUT_SECONDS", 30),
 		ClientCompression:   envBool("WS_ENABLE_COMPRESSION", false),
 		AggregateFiles:      envString("AGGREGATE_FILES", ""),
+		ReceiverDiagnostics: envBool("RECEIVER_DIAGNOSTICS", false),
+		ReceiverTopN:        envInt("RECEIVER_DIAGNOSTICS_TOP_N", 10),
 	}
 }
 
@@ -1027,6 +1267,9 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.BatchIntervalSecs < 0 {
 		return errors.New("BATCH_INTERVAL_SECONDS must not be negative")
+	}
+	if cfg.PublishIntervalMs < 0 {
+		return errors.New("PUBLISH_MESSAGE_INTERVAL_MS must not be negative")
 	}
 	return nil
 }
@@ -1098,4 +1341,8 @@ func sleepUntil(deadline time.Time) {
 
 func isFinite(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func unixMillis(t time.Time) float64 {
+	return float64(t.UnixNano()) / float64(time.Millisecond)
 }

@@ -20,6 +20,7 @@ const MSG_COUNT = parseInt(__ENV.MSG_COUNT || "100", 10);
 const PAYLOAD_SIZE = parseInt(__ENV.PAYLOAD_SIZE || "1024", 10);
 const PUBLISH_BATCHES = parseInt(__ENV.PUBLISH_BATCHES || "20", 10);
 const BATCH_INTERVAL_SECONDS = parseFloat(__ENV.BATCH_INTERVAL_SECONDS || "2");
+const PUBLISH_MESSAGE_INTERVAL_MS = parseFloat(__ENV.PUBLISH_MESSAGE_INTERVAL_MS || "0");
 const RAMP_UP_SECONDS = parseInt(__ENV.RAMP_UP_SECONDS || "10", 10);
 const RAMP_DOWN_SECONDS = parseInt(__ENV.RAMP_DOWN_SECONDS || "5", 10);
 const PUBLISH_START_SECONDS = parseInt(__ENV.PUBLISH_START_SECONDS || "12", 10);
@@ -352,8 +353,9 @@ export function listener() {
 }
 
 export function publisher() {
-  const url = `http://${HTTP_HOST}:${HTTP_PORT}/fire?count=${MSG_COUNT}&size=${PAYLOAD_SIZE}`;
-  const res = http.get(url, { timeout: `${Math.max(5, BATCH_INTERVAL_SECONDS)}s` });
+  const publishRequestSeconds = Math.ceil((MSG_COUNT * PUBLISH_MESSAGE_INTERVAL_MS) / 1000) + 5;
+  const url = `http://${HTTP_HOST}:${HTTP_PORT}/fire?count=${MSG_COUNT}&size=${PAYLOAD_SIZE}&interval_ms=${PUBLISH_MESSAGE_INTERVAL_MS}`;
+  const res = http.get(url, { timeout: `${Math.max(5, publishRequestSeconds)}s` });
   const ok = check(res, {
     published: (r) => r.status === 200,
     "published requested count": (r) => {
@@ -437,6 +439,7 @@ export function handleSummary(data) {
       payloadSize: PAYLOAD_SIZE,
       publishBatches: PUBLISH_BATCHES,
       batchIntervalSeconds: BATCH_INTERVAL_SECONDS,
+      publishMessageIntervalMs: PUBLISH_MESSAGE_INTERVAL_MS,
       rampUpSeconds: RAMP_UP_SECONDS,
       holdSeconds: HOLD_SECONDS,
       rampDownSeconds: RAMP_DOWN_SECONDS,
